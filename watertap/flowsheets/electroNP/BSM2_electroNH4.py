@@ -25,6 +25,7 @@ from pyomo.network import Arc, SequentialDecomposition
 
 from idaes.core import (
     FlowsheetBlock,
+    UnitModelCostingBlock,
 )
 from idaes.models.unit_models import (
     CSTR,
@@ -79,6 +80,12 @@ from watertap.unit_models.thickener import (
 from watertap.core.util.initialization import check_solve
 from watertap.unit_models.electroNP_ZO import ElectroNPZO
 
+from watertap.costing import WaterTAPCosting
+from watertap.costing.unit_models.clarifier import (
+    cost_circular_clarifier,
+    cost_primary_clarifier,
+)
+
 # Set up logger
 _log = idaeslog.getLogger(__name__)
 
@@ -99,8 +106,10 @@ def main(has_electroNP=False):
     m.fs.MX3.pressure_equality_constraints[0.0, 2].deactivate()
     m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
     print(f"DOF after initialization: {degrees_of_freedom(m)}")
-
+        
     results = solve(m)
+
+    add_costing(m) # add costing after solve
 
     pyo.assert_optimal_termination(results)
     check_solve(
@@ -109,9 +118,7 @@ def main(has_electroNP=False):
         logger=_log,
         fail_flag=True,
     )
-
     return m, results
-
 
 def build_flowsheet(has_electroNP=False):
     m = pyo.ConcreteModel()
@@ -245,7 +252,6 @@ def build_flowsheet(has_electroNP=False):
     m.fs.translator_adm1_asm2d = Translator_ADM1_ASM2D(
         inlet_property_package=m.fs.props_ADM1,
         outlet_property_package=m.fs.props_ASM2D,
-        # Commented out, as the inlet and outlet reaction packages were throwing an error
         # inlet_reaction_package=m.fs.rxn_props_ADM1,
         # outlet_reaction_package=m.fs.rxn_props_ASM2D,
         has_phase_equilibrium=False,
@@ -288,6 +294,7 @@ def build_flowsheet(has_electroNP=False):
     m.fs.stream14 = Arc(source=m.fs.CL2.underflow, destination=m.fs.SP2.inlet)
     m.fs.stream15 = Arc(source=m.fs.SP2.recycle, destination=m.fs.P1.inlet)
     m.fs.stream16 = Arc(source=m.fs.P1.outlet, destination=m.fs.MX1.recycle)
+    # m.fs.stream17 = Arc(source=m.fs.SP2.waste, destination=m.fs.Sludge.inlet)
 
     # Link units related to AD section
     m.fs.stream_AD_translator = Arc(
@@ -510,12 +517,13 @@ def set_operating_conditions(m):
     # ElectroNP
     if m.fs.has_electroNP is True:
         m.fs.electroNP.energy_electric_flow_mass.fix(
-            0.044 * pyo.units.kWh / pyo.units.kg
+            0.4 * pyo.units.kWh / pyo.units.kg
         )
         m.fs.electroNP.magnesium_chloride_dosage.fix(0.388)
-        P_removal = 0.95
+        P_removal = 0.1
+        N_removal = 0.5
         m.fs.electroNP.P_removal = P_removal
-        m.fs.electroNP.N_removal = 0.3 * P_removal
+        m.fs.electroNP.N_removal = N_removal
         m.fs.electroNP.frac_mass_H2O_treated[0].fix(0.99)
 
     def scale_variables(m):
@@ -528,6 +536,8 @@ def set_operating_conditions(m):
                 iscale.set_scaling_factor(var, 1e-5)
             if "conc_mass_comp" in var.name:
                 iscale.set_scaling_factor(var, 1e1)
+            # if "electroNP.mixed_state[0.0].conc_mass_comp[S_PO4]" in var.name:
+            #     iscale.set_scaling_factor(var, 1e0)    # CHECK IF THIS IS NEEDED
 
     for unit in ("R1", "R2", "R3", "R4", "R5", "R6", "R7"):
         block = getattr(m.fs, unit)
@@ -676,6 +686,50 @@ def initialize_system(m, has_electroNP=False):
 
     seq.run(m, function)
 
+def add_costing(m):
+    """Add costing block"""
+    m.fs.costing = WaterTAPCosting()
+
+    m.fs.costing.base_currency = pyo.units.USD_2020
+
+    # Costing Blocks
+    m.fs.R1.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+    m.fs.R2.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+    m.fs.R3.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+    m.fs.R4.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+    m.fs.R5.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+    m.fs.CL.costing = UnitModelCostingBlock(
+        flowsheet_costing_block=m.fs.costing,
+        costing_method=cost_primary_clarifier,
+    )
+
+    m.fs.CL2.costing = UnitModelCostingBlock(
+        flowsheet_costing_block=m.fs.costing,
+        costing_method=cost_circular_clarifier,
+    )
+
+    # m.fs.RADM.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+    # m.fs.DU.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+    # m.fs.TU.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+
+    # TODO: Leaving out mixer costs; consider including later
+
+    # process costing and add system level metrics
+
+    if hasattr(m.fs, 'electroNP'):
+        m.fs.electroNP.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
+        m.fs.costing.electroNP.phosphorus_recovery_value = 0.1 # TODO: add NH4 removal value
+
+    m.fs.costing.cost_process()
+    m.fs.costing.add_electricity_intensity(m.fs.FeedWater.properties[0].flow_vol)
+    m.fs.costing.add_annual_water_production(m.fs.Treated.properties[0].flow_vol)
+    m.fs.costing.add_LCOW(m.fs.FeedWater.properties[0].flow_vol)
+    m.fs.costing.add_specific_energy_consumption(m.fs.FeedWater.properties[0].flow_vol)
+
+    # m.fs.objective = pyo.Objective(expr=m.fs.costing.LCOW)
+    iscale.set_scaling_factor(m.fs.costing.LCOW, 1e3)
+    iscale.set_scaling_factor(m.fs.costing.total_capital_cost, 1e-7)
+    iscale.set_scaling_factor(m.fs.costing.total_capital_cost, 1e-5)
 
 def solve(m, solver=None):
     if solver is None:
