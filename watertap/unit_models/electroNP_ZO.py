@@ -143,7 +143,7 @@ class ElectroNPZOdata(SeparatorData):
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.P_removal
             elif i == "S_NH4":
                 # if NH4 removal is not specified, used N_removal
-                if blk.NH4_removal is None:
+                if blk.NH4_removal > blk.N_removal:
                     return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
                 else:
                     return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.NH4_removal

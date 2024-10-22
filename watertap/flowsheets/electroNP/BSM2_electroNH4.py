@@ -526,9 +526,10 @@ def set_operating_conditions(m):
         )
         m.fs.electroNP.magnesium_chloride_dosage.fix(0.388)
         P_removal = 0.1
-        N_removal = 0.5
+        NH4_removal = 0.5
         m.fs.electroNP.P_removal = P_removal
-        m.fs.electroNP.N_removal = N_removal
+        m.fs.electroNP.NH4_removal = NH4_removal
+        m.fs.electroNP.N_removal = 0.1
         m.fs.electroNP.frac_mass_H2O_treated[0].fix(0.99)
 
     def scale_variables(m):
@@ -724,6 +725,7 @@ def add_costing(m):
     if hasattr(m.fs, 'electroNP'):
         m.fs.electroNP.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
         m.fs.costing.electroNP.phosphorus_recovery_value = 0.1 # TODO: add NH4 removal value
+        m.fs.costing.electroNP.ammonia_recovery_value = 0.1
 
     m.fs.costing.cost_process()
     m.fs.costing.add_electricity_intensity(m.fs.FeedWater.properties[0].flow_vol)
@@ -745,57 +747,57 @@ def solve(m, solver=None):
     return results
 
 
-# if __name__ == "__main__":
-#     # This method builds and runs a steady state activated sludge flowsheet.
-#     m, results = main(has_electroNP=True)
-#     if m.fs.has_electroNP is False:
-#         stream_table = create_stream_table_dataframe(
-#             {
-#                 "Feed": m.fs.FeedWater.outlet,
-#                 # "R3 inlet": m.fs.R3.inlet,
-#                 # "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
-#                 "R1": m.fs.R1.outlet,
-#                 "R2": m.fs.R2.outlet,
-#                 "R3": m.fs.R3.outlet,
-#                 "R4": m.fs.R4.outlet,
-#                 "R5": m.fs.R5.outlet,
-#                 "R6": m.fs.R6.outlet,
-#                 "R7": m.fs.R7.outlet,
-#                 "thickener outlet": m.fs.thickener.underflow,
-#                 "ADM-ASM translator outlet": m.fs.translator_adm1_asm2d.outlet,
-#                 "dewater outlet": m.fs.dewater.overflow,
-#                 "Treated water": m.fs.Treated.inlet,
-#                 "Sludge": m.fs.Sludge.inlet,
-#             },
-#             time_point=0,
-#         )
-#     else:
-#         stream_table = create_stream_table_dataframe(
-#             {
-#                 "Feed": m.fs.FeedWater.outlet,
-#                 "R3 inlet": m.fs.R3.inlet,
-#                 "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
-#                 "R1": m.fs.R1.outlet,
-#                 "R2": m.fs.R2.outlet,
-#                 "R3": m.fs.R3.outlet,
-#                 "R4": m.fs.R4.outlet,
-#                 "R5": m.fs.R5.outlet,
-#                 "R6": m.fs.R6.outlet,
-#                 "R7": m.fs.R7.outlet,
-#                 "thickener outlet": m.fs.thickener.underflow,
-#                 "ADM-ASM translator outlet": m.fs.translator_adm1_asm2d.outlet,
-#                 "dewater outlet": m.fs.dewater.overflow,
-#                 "electroNP treated": m.fs.electroNP.treated,
-#                 "electroNP byproduct": m.fs.electroNP.byproduct,
-#                 "Treated water": m.fs.Treated.inlet,
-#                 "Sludge": m.fs.Sludge.inlet,
-#             },
-#             time_point=0,
+if __name__ == "__main__":
+    # This method builds and runs a steady state activated sludge flowsheet.
+    m, results = main(has_electroNP=True)
+    if m.fs.has_electroNP is False:
+        stream_table = create_stream_table_dataframe(
+            {
+                "Feed": m.fs.FeedWater.outlet,
+                # "R3 inlet": m.fs.R3.inlet,
+                # "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
+                "R1": m.fs.R1.outlet,
+                "R2": m.fs.R2.outlet,
+                "R3": m.fs.R3.outlet,
+                "R4": m.fs.R4.outlet,
+                "R5": m.fs.R5.outlet,
+                "R6": m.fs.R6.outlet,
+                "R7": m.fs.R7.outlet,
+                "thickener outlet": m.fs.thickener.underflow,
+                "ADM-ASM translator outlet": m.fs.translator_adm1_asm2d.outlet,
+                "dewater outlet": m.fs.dewater.overflow,
+                "Treated water": m.fs.Treated.inlet,
+                "Sludge": m.fs.Sludge.inlet,
+            },
+            time_point=0,
+        )
+    else:
+        stream_table = create_stream_table_dataframe(
+            {
+                "Feed": m.fs.FeedWater.outlet,
+                "R3 inlet": m.fs.R3.inlet,
+                "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
+                "R1": m.fs.R1.outlet,
+                "R2": m.fs.R2.outlet,
+                "R3": m.fs.R3.outlet,
+                "R4": m.fs.R4.outlet,
+                "R5": m.fs.R5.outlet,
+                "R6": m.fs.R6.outlet,
+                "R7": m.fs.R7.outlet,
+                "thickener outlet": m.fs.thickener.underflow,
+                "ADM-ASM translator outlet": m.fs.translator_adm1_asm2d.outlet,
+                "dewater outlet": m.fs.dewater.overflow,
+                "electroNP treated": m.fs.electroNP.treated,
+                "electroNP byproduct": m.fs.electroNP.byproduct,
+                "Treated water": m.fs.Treated.inlet,
+                "Sludge": m.fs.Sludge.inlet,
+            },
+            time_point=0,
             
-#         )
-#     # print(stream_table_dataframe_to_string(stream_table))
+        )
+    # print(stream_table_dataframe_to_string(stream_table))
 
-#     plot_network(m, stream_table, path_to_save="BSM2_electroNP_flowsheet.png")
+    plot_network(m, stream_table, path_to_save="BSM2_electroNP_flowsheet.png")
 
 from parameter_sweep import (
     LinearSample,
@@ -808,10 +810,10 @@ def build_model(**kwargs):
 def build_sweep_params(model, nx=2, **kwargs):
     sweep_params = {}
     sweep_params["N removal"] = LinearSample(
-        model.fs.electroNP.N_removal, 0.1, 1.0, nx
+        model.fs.electroNP.N_removal, 0.4, 0.6, nx
     )
     sweep_params["N removal intensity"] = LinearSample(
-        model.fs.electroNP.energy_electric_flow_mass, 0.1, 1.0, nx
+        model.fs.electroNP.energy_electric_flow_mass, 0.4, 0.6, nx
     )
     return sweep_params
 
@@ -838,24 +840,26 @@ def run_analysis(case_num=1, interpolate_nan_outputs=True, output_filename=None)
 
     return global_results
 
-results = run_analysis()
+run_parameter_sweep = False
+if run_parameter_sweep:
+    results = run_analysis()
 
 
-# create dataframe of results
-df_results = pd.DataFrame()
-# df_results["Feed Flow (m3/d)"] = results[1]["sweep_params"]["feed_flow"]["value"]
-df_results["N removal"] = results[1]["sweep_params"]["N removal"]["value"]
-df_results["N removal intensity"] = results[1]["sweep_params"]["N removal intensity"]["value"]
-df_results["Electricity Intensity"] = results[1]["outputs"]["Electricity Intensity"]["value"]
+    # create dataframe of results
+    df_results = pd.DataFrame()
+    # df_results["Feed Flow (m3/d)"] = results[1]["sweep_params"]["feed_flow"]["value"]
+    df_results["N removal"] = results[1]["sweep_params"]["N removal"]["value"]
+    df_results["N removal intensity"] = results[1]["sweep_params"]["N removal intensity"]["value"]
+    df_results["Electricity Intensity"] = results[1]["outputs"]["Electricity Intensity"]["value"]
 
-pivot_df = df_results.pivot(index="N removal", columns="N removal intensity", values="Electricity Intensity")
-pivot_df = pivot_df.round(2)
-# round index and column names to 2 decimal
-pivot_df.index = pivot_df.index.round(2)
-pivot_df.columns = pivot_df.columns.round(2)
+    pivot_df = df_results.pivot(index="N removal", columns="N removal intensity", values="Electricity Intensity")
+    pivot_df = pivot_df.round(2)
+    # round index and column names to 2 decimal
+    pivot_df.index = pivot_df.index.round(2)
+    pivot_df.columns = pivot_df.columns.round(2)
 
-heatmap = sns.heatmap(pivot_df, annot=True, cmap='YlOrBr', cbar_kws={'label': 'Plant-Wide Electricity Intensity (kWh/m3)'})
-plt.xlabel("N removal (%) from Anaerobic Digestate", fontsize=12)
-plt.ylabel("Energy intensity of N removal (kWh/kg N)", fontsize=12)
-plt.savefig("sensitivity_heatmap.png", dpi=300)
-plt.show()
+    heatmap = sns.heatmap(pivot_df, annot=True, cmap='YlOrBr', cbar_kws={'label': 'Plant-Wide Electricity Intensity (kWh/m3)'})
+    plt.xlabel("N removal (%) from Anaerobic Digestate", fontsize=12)
+    plt.ylabel("Energy intensity of N removal (kWh/kg N)", fontsize=12)
+    plt.savefig("sensitivity_heatmap.png", dpi=300)
+    plt.show()
