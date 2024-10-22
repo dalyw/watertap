@@ -6,8 +6,8 @@ from pyomo.network import Arc
 
 
 
-def plot_network(m, stream_table):
-    plt.figure(figsize=(10, 8))
+def plot_network(m, stream_table, path_to_save=None):
+    plt.figure(figsize=(8, 6))
     G = nx.DiGraph()
 
     # specify types of nodes
@@ -68,10 +68,12 @@ def plot_network(m, stream_table):
     pos['dewater'][0] -= 0.2
     pos['translator_adm1_asm2d'][1] -= 0.1
     pos['translator_asm2d_adm1'][0] -= 0.4
-    nx.draw(G, pos, with_labels=True, node_size=1000, node_color="skyblue", font_size=10, font_weight="bold", arrows=True)
+    nx.draw(G, pos, with_labels=True, node_size=500, node_color="skyblue", font_size=10, font_weight="bold", arrows=True)
     
     edge_labels = nx.get_edge_attributes(G, 'label')
     nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8)
     
     plt.title("BSM2 + electroNP Flowsheet")
+    if path_to_save is not None:
+        plt.savefig(path_to_save, dpi=300)
     plt.show()

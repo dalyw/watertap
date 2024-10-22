@@ -110,11 +110,19 @@ class ElectroNPZOdata(SeparatorData):
             units=pyunits.dimensionless,
         )
 
-        self.N_removal = Param(
+        self.NH4_removal = Param(
             within=NonNegativeReals,
             mutable=True,
             default=0.3,
             doc="Reference ammonia removal fraction on a mass basis",
+            units=pyunits.dimensionless,
+        )
+
+        self.N_removal = Param(
+            within=NonNegativeReals,
+            mutable=True,
+            default=0.3,
+            doc="Reference nitrogen removal fraction on a mass basis",
             units=pyunits.dimensionless,
         )
 
@@ -134,6 +142,14 @@ class ElectroNPZOdata(SeparatorData):
             elif i == "S_PO4":
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.P_removal
             elif i == "S_NH4":
+                # if NH4 removal is not specified, used N_removal
+                if blk.NH4_removal is None:
+                    return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
+                else:
+                    return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.NH4_removal
+            elif i == "S_NO3":
+                return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
+            elif i == "S_NO2":
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
             else:
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == 1e-7
