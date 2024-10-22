@@ -48,6 +48,8 @@ class ElectroNPZOdata(SeparatorData):
     CONFIG.outlet_list = ["treated", "byproduct"]
     CONFIG.split_basis = SplittingType.componentFlow
 
+    # CONFIG.treated_components = ["S_PO4", "S_NH4", "S_NO3", "S_NO2"]
+
     def build(self):
         # Call UnitModel.build to set up dynamics
         super(ElectroNPZOdata, self).build()
@@ -142,17 +144,13 @@ class ElectroNPZOdata(SeparatorData):
             elif i == "S_PO4":
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.P_removal
             elif i == "S_NH4":
-                # if NH4 removal is not specified, used N_removal
-                if blk.NH4_removal > blk.N_removal:
-                    return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
-                else:
-                    return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.NH4_removal
+                return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.NH4_removal
             elif i == "S_NO3":
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
             elif i == "S_NO2":
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
             else:
-                return blk.removal_frac_mass_comp[t, "byproduct", i] == 1e-7
+                return blk.removal_frac_mass_comp[t, "byproduct", i] == 1e-7 # assuming other ions not in byproduct
 
         self.electricity = Var(
             self.flowsheet().time,
@@ -161,10 +159,16 @@ class ElectroNPZOdata(SeparatorData):
             doc="Electricity consumption of unit",
         )
 
-        self.energy_electric_flow_mass = Var(
+        self.energy_electric_flow_mass_P = Var(
             units=pyunits.kWh / pyunits.kg,
             doc="Electricity intensity with respect to phosphorus removal",
         )
+
+        self.energy_electric_flow_mass_N = Var(
+            units=pyunits.kWh / pyunits.kg,
+            doc="Electricity intensity with respect to phosphorus removal",
+        )
+        ## OR make indexed parameter with solute list. solute list comes from property_package.solvent_set
 
         @self.Constraint(
             self.flowsheet().time,

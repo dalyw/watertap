@@ -90,6 +90,7 @@ from plot_network import plot_network
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from idaes.core.util.model_diagnostics import DiagnosticsToolbox
 
 # Set up logger
 _log = idaeslog.getLogger(__name__)
@@ -97,6 +98,7 @@ _log = idaeslog.getLogger(__name__)
 
 def main(has_electroNP=False):
     m = build_flowsheet(has_electroNP=has_electroNP)
+    add_costing(m)
     set_operating_conditions(m)
 
     for mx in m.fs.mixers:
@@ -105,16 +107,20 @@ def main(has_electroNP=False):
     m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
     print(f"DOF before initialization: {degrees_of_freedom(m)}")
 
-    initialize_system(m, has_electroNP=has_electroNP)
-    for mx in m.fs.mixers:
-        mx.pressure_equality_constraints[0.0, 2].deactivate()
-    m.fs.MX3.pressure_equality_constraints[0.0, 2].deactivate()
-    m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
-    print(f"DOF after initialization: {degrees_of_freedom(m)}")
-        
-    results = solve(m)
+    db = DiagnosticsToolbox(m)
+    db.report_structural_issues()
+    db.display_variables_with_extreme_jacobians()
+    db.display_variables_with_extreme_scaling_factors()
 
-    add_costing(m) # add costing after solve
+    # initialize_system(m, has_electroNP=has_electroNP)
+    # db.report_numerical_issues()
+    #for mx in m.fs.mixers:
+        #mx.pressure_equality_constraints[0.0, 2].deactivate()
+    #m.fs.MX3.pressure_equality_constraints[0.0, 2].deactivate()
+    #m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
+    #print(f"DOF after initialization: {degrees_of_freedom(m)}")
+    
+    # results = solve(m)
 
     pyo.assert_optimal_termination(results)
     check_solve(
@@ -273,7 +279,7 @@ def build_flowsheet(has_electroNP=False):
     # ======================================================================
     # ElectroN-P
     if has_electroNP is True:
-        m.fs.electroNP = ElectroNPZO(property_package=m.fs.props_ASM2D)
+        m.fs.electroNP = ElectroNPZO(property_package=m.fs.props_ASM2D) # could also add component set, as a dict. or make list dependent on property package
 
     # ======================================================================
     # Product Blocks
@@ -535,16 +541,31 @@ def set_operating_conditions(m):
     def scale_variables(m):
         for var in m.fs.component_data_objects(pyo.Var, descend_into=True):
             if "flow_vol" in var.name:
-                iscale.set_scaling_factor(var, 1e0)
+                if "thickener" in var.parent_component().name or "AD" in var.parent_component().name:
+                    print(var.name)
+                    print(var.value)
+                    iscale.set_scaling_factor(var, 0)
+                else:
+                    iscale.set_scaling_factor(var, 1e-4)
             if "temperature" in var.name:
                 iscale.set_scaling_factor(var, 1e-2)
-            if "pressure" in var.name:
-                iscale.set_scaling_factor(var, 1e-5)
+            if "pressure" in var.name and not "pressure_sat" in var.name:
+                iscale.set_scaling_factor(var, 1e-4)
             if "conc_mass_comp" in var.name:
                 iscale.set_scaling_factor(var, 1e1)
-            # if "electroNP.mixed_state[0.0].conc_mass_comp[S_PO4]" in var.name:
-            #     iscale.set_scaling_factor(var, 1e0)    # CHECK IF THIS IS NEEDED
-
+            # if "work" in var.name:
+            #     iscale.set_scaling_factor(var, 1e6)
+            # if "deltaP" in var.name:
+            #     iscale.set_scaling_factor(var, 1e5)
+            # if "heat" in var.name:
+            #     iscale.set_scaling_factor(var, 1e9)
+            # if "reaction_rate" in var.name:
+            #     iscale.set_scaling_factor(var, 1e-4)
+            # if "rate_reaction_extent" in var.name:
+            #     iscale.set_scaling_factor(var, 1e-4)
+            if "rate_reaction_generation" in var.name:
+                iscale.set_scaling_factor(var, 1e-5)
+                
     for unit in ("R1", "R2", "R3", "R4", "R5", "R6", "R7"):
         block = getattr(m.fs, unit)
         iscale.set_scaling_factor(
@@ -744,6 +765,7 @@ def solve(m, solver=None):
     results = solver.solve(m, tee=True)
     check_solve(results, checkpoint="closing recycle", logger=_log, fail_flag=True)
     pyo.assert_optimal_termination(results)
+    # add_costing(m) # add costing after solve
     return results
 
 
@@ -797,20 +819,37 @@ if __name__ == "__main__":
         )
     # print(stream_table_dataframe_to_string(stream_table))
 
-    plot_network(m, stream_table, path_to_save="BSM2_electroNP_flowsheet.png")
-
+#     plot_network(m, stream_table, path_to_save="BSM2_electroNP_flowsheet.png")
 from parameter_sweep import (
     LinearSample,
     parameter_sweep,
 )
 
 def build_model(**kwargs):
-    return main(has_electroNP=True)[0]
+    # return main(has_electroNP=has_electroNP)[0]
+    m = build_flowsheet(has_electroNP=True)
+    set_operating_conditions(m)
+    for mx in m.fs.mixers:
+        mx.pressure_equality_constraints[0.0, 2].deactivate()
+    m.fs.MX3.pressure_equality_constraints[0.0, 2].deactivate()
+    m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
+    print(f"DOF before initialization: {degrees_of_freedom(m)}")
 
-def build_sweep_params(model, nx=2, **kwargs):
+    initialize_system(m, has_electroNP=True)
+    for mx in m.fs.mixers:
+        mx.pressure_equality_constraints[0.0, 2].deactivate()
+    m.fs.MX3.pressure_equality_constraints[0.0, 2].deactivate()
+    m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
+    print(f"DOF after initialization: {degrees_of_freedom(m)}")
+
+    add_costing(m) # add costing after solve
+
+    return m
+
+def build_sweep_params(model, nx=1, **kwargs):
     sweep_params = {}
     sweep_params["N removal"] = LinearSample(
-        model.fs.electroNP.N_removal, 0.4, 0.6, nx
+        model.fs.electroNP.N_removal, 0.1, 0.2, nx
     )
     sweep_params["N removal intensity"] = LinearSample(
         model.fs.electroNP.energy_electric_flow_mass, 0.4, 0.6, nx
@@ -824,6 +863,9 @@ def build_outputs(model, **kwargs):
     outputs["Effluent NH4 Concentration"] = model.fs.Treated.conc_mass_comp[0, "S_NH4"]
     return outputs
 
+def reinitialize_function(model):
+    initialize_system(model, has_electroNP=True)
+
 def run_analysis(case_num=1, interpolate_nan_outputs=True, output_filename=None):
     if output_filename is None:
         output_filename = f"sensitivity_{case_num}"
@@ -835,6 +877,7 @@ def run_analysis(case_num=1, interpolate_nan_outputs=True, output_filename=None)
         csv_results_file_name=f"{output_filename}.csv",
         h5_results_file_name=f"{output_filename}.h5",
         optimize_function=solve,
+        # reinitialize_function=reinitialize_function,
         interpolate_nan_outputs=interpolate_nan_outputs,
     )
 
@@ -843,7 +886,6 @@ def run_analysis(case_num=1, interpolate_nan_outputs=True, output_filename=None)
 run_parameter_sweep = False
 if run_parameter_sweep:
     results = run_analysis()
-
 
     # create dataframe of results
     df_results = pd.DataFrame()
