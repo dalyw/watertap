@@ -110,7 +110,6 @@ def main(has_electroNP=False):
     db = DiagnosticsToolbox(m)
     db.report_structural_issues()
     db.display_variables_with_extreme_jacobians()
-    db.display_variables_with_extreme_scaling_factors()
 
     # initialize_system(m, has_electroNP=has_electroNP)
     # db.report_numerical_issues()
@@ -122,13 +121,15 @@ def main(has_electroNP=False):
     
     # results = solve(m)
 
-    pyo.assert_optimal_termination(results)
-    check_solve(
-        results,
-        checkpoint="re-solve with controls in place",
-        logger=_log,
-        fail_flag=True,
-    )
+    # pyo.assert_optimal_termination(results)
+    # check_solve(
+    #     results,
+    #     checkpoint="re-solve with controls in place",
+    #     logger=_log,
+    #     fail_flag=True,
+    # )
+
+    results = 0
     return m, results
 
 def build_flowsheet(has_electroNP=False):
@@ -263,8 +264,8 @@ def build_flowsheet(has_electroNP=False):
     m.fs.translator_adm1_asm2d = Translator_ADM1_ASM2D(
         inlet_property_package=m.fs.props_ADM1,
         outlet_property_package=m.fs.props_ASM2D,
-        # inlet_reaction_package=m.fs.rxn_props_ADM1,
-        # outlet_reaction_package=m.fs.rxn_props_ASM2D,
+        inlet_reaction_package=m.fs.rxn_props_ADM1,
+        outlet_reaction_package=m.fs.rxn_props_ASM2D,
         has_phase_equilibrium=False,
         outlet_state_defined=True,
     )
@@ -527,7 +528,7 @@ def set_operating_conditions(m):
 
     # ElectroNP
     if m.fs.has_electroNP is True:
-        m.fs.electroNP.energy_electric_flow_mass.fix(
+        m.fs.electroNP.energy_electric_flow_mass["S_NH4"].fix(
             0.4 * pyo.units.kWh / pyo.units.kg
         )
         m.fs.electroNP.magnesium_chloride_dosage.fix(0.388)
@@ -852,7 +853,7 @@ def build_sweep_params(model, nx=1, **kwargs):
         model.fs.electroNP.N_removal, 0.1, 0.2, nx
     )
     sweep_params["N removal intensity"] = LinearSample(
-        model.fs.electroNP.energy_electric_flow_mass, 0.4, 0.6, nx
+        model.fs.electroNP.energy_electric_flow_mass["S_NH4"], 0.4, 0.6, nx
     )
     return sweep_params
 

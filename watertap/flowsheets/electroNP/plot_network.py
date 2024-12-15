@@ -7,6 +7,17 @@ from pyomo.network import Arc
 
 
 def plot_network(m, stream_table, path_to_save=None):
+    """
+    Plot the network of the flowsheet.
+
+    Args:
+        m (pyomo.core.base.PyomoModel): The Pyomo model to plot.
+        stream_table (pandas.DataFrame): The stream table to plot.
+        path_to_save (str): The path to save the plot.
+
+    Returns:
+        None. Saves the plot to the path_to_save.
+    """
     plt.figure(figsize=(8, 6))
     G = nx.DiGraph()
 
@@ -53,21 +64,26 @@ def plot_network(m, stream_table, path_to_save=None):
             G.edges[source_name, dest_name]['label'] = label
 
     pos = nx.kamada_kawai_layout(G, weight='weight', scale=3, center=None, dim=2)  # Increased scale for more spread
-    pos['MX3'][1] -= 0.1
-    pos['MX4'][1] -= 0.1
-    pos['R1'][1] -= 0.1
-    pos['R2'][0] -= 0.2
-    pos['R2'][1] += 0.1
-    pos['R5'][1] += 0.3
-    pos['R6'][1] += 0.3
-    pos['R7'][1] -= 0.2
-    pos['SP1'][0] += 0.1
-    pos['thickener'][1] += 0.2
-    pos['thickener'][0] -= 0.1
-    pos['dewater'][1] -= 0.1
-    pos['dewater'][0] -= 0.2
-    pos['translator_adm1_asm2d'][1] -= 0.1
-    pos['translator_asm2d_adm1'][0] -= 0.4
+    # Adjust node positions for better layout
+    position_adjustments = {
+        'MX3': [0, -0.1],
+        'MX4': [0, -0.1], 
+        'R1': [0, -0.1],
+        'R2': [-0.2, 0.1],
+        'R5': [0, 0.3],
+        'R6': [0, 0.3],
+        'R7': [0, -0.2],
+        'SP1': [0.1, 0],
+        'thickener': [-0.1, 0.2],
+        'dewater': [-0.2, -0.1],
+        'translator_adm1_asm2d': [0, -0.1],
+        'translator_asm2d_adm1': [-0.4, 0]
+    }
+    
+    for node, [dx, dy] in position_adjustments.items():
+        if node in pos:
+            pos[node][0] += dx
+            pos[node][1] += dy
     nx.draw(G, pos, with_labels=True, node_size=500, node_color="skyblue", font_size=10, font_weight="bold", arrows=True)
     
     edge_labels = nx.get_edge_attributes(G, 'label')

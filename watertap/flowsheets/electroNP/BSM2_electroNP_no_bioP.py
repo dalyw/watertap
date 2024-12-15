@@ -245,9 +245,8 @@ def build_flowsheet(has_electroNP=False):
     m.fs.translator_adm1_asm2d = Translator_ADM1_ASM2D(
         inlet_property_package=m.fs.props_ADM1,
         outlet_property_package=m.fs.props_ASM2D,
-        # Commented out, as the inlet and outlet reaction packages were throwing an error
-        # inlet_reaction_package=m.fs.rxn_props_ADM1,
-        # outlet_reaction_package=m.fs.rxn_props_ASM2D,
+        inlet_reaction_package=m.fs.rxn_props_ADM1,
+        outlet_reaction_package=m.fs.rxn_props_ASM2D,
         has_phase_equilibrium=False,
         outlet_state_defined=True,
     )
@@ -509,7 +508,7 @@ def set_operating_conditions(m):
 
     # ElectroNP
     if m.fs.has_electroNP is True:
-        m.fs.electroNP.energy_electric_flow_mass.fix(
+        m.fs.electroNP.energy_electric_flow_mass["S_PO4"].fix(
             0.044 * pyo.units.kWh / pyo.units.kg
         )
         m.fs.electroNP.magnesium_chloride_dosage.fix(0.388)
@@ -693,8 +692,8 @@ if __name__ == "__main__":
         stream_table = create_stream_table_dataframe(
             {
                 "Feed": m.fs.FeedWater.outlet,
-                # "R3 inlet": m.fs.R3.inlet,
-                # "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
+                "R3 inlet": m.fs.R3.inlet,
+                "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
                 "R1": m.fs.R1.outlet,
                 "R2": m.fs.R2.outlet,
                 "R3": m.fs.R3.outlet,
@@ -714,23 +713,26 @@ if __name__ == "__main__":
         stream_table = create_stream_table_dataframe(
             {
                 "Feed": m.fs.FeedWater.outlet,
-                # "R3 inlet": m.fs.R3.inlet,
-                # "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
-                # "R1": m.fs.R1.outlet,
-                # "R2": m.fs.R2.outlet,
-                # "R3": m.fs.R3.outlet,
-                # "R4": m.fs.R4.outlet,
-                # "R5": m.fs.R5.outlet,
-                # "R6": m.fs.R6.outlet,
-                # "R7": m.fs.R7.outlet,
-                # "thickener outlet": m.fs.thickener.underflow,
-                # "ADM-ASM translator outlet": m.fs.translator_adm1_asm2d.outlet,
-                # "dewater outlet": m.fs.dewater.overflow,
+                "R3 inlet": m.fs.R3.inlet,
+                "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
+                "R1": m.fs.R1.outlet,
+                "R2": m.fs.R2.outlet,
+                "R3": m.fs.R3.outlet,
+                "R4": m.fs.R4.outlet,
+                "R5": m.fs.R5.outlet,
+                "R6": m.fs.R6.outlet,
+                "R7": m.fs.R7.outlet,
+                "thickener outlet": m.fs.thickener.underflow,
+                "ADM-ASM translator outlet": m.fs.translator_adm1_asm2d.outlet,
+                "dewater outlet": m.fs.dewater.overflow,
                 "electroNP treated": m.fs.electroNP.treated,
-                # "electroNP byproduct": m.fs.electroNP.byproduct,
-                # "Treated water": m.fs.Treated.inlet,
-                # "Sludge": m.fs.Sludge.inlet,
+                "electroNP byproduct": m.fs.electroNP.byproduct,
+                "Treated water": m.fs.Treated.inlet,
+                "Sludge": m.fs.Sludge.inlet,
             },
             time_point=0,
         )
     print(stream_table_dataframe_to_string(stream_table))
+
+    from plot_network import plot_network
+    plot_network(m, stream_table, path_to_save="BSM2_electroNP_no_bioP_network.png")

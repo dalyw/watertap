@@ -151,7 +151,7 @@ class ElectroNPZOdata(SeparatorData):
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
             else:
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == 1e-7 # assuming other ions not in byproduct
-
+        
         self.electricity = Var(
             self.flowsheet().time,
             units=pyunits.kW,
@@ -159,28 +159,24 @@ class ElectroNPZOdata(SeparatorData):
             doc="Electricity consumption of unit",
         )
 
-        self.energy_electric_flow_mass_P = Var(
+        self.energy_electric_flow_mass = Var(
+            self.config.property_package.solute_set,
             units=pyunits.kWh / pyunits.kg,
-            doc="Electricity intensity with respect to phosphorus removal",
-        )
-
-        self.energy_electric_flow_mass_N = Var(
-            units=pyunits.kWh / pyunits.kg,
-            doc="Electricity intensity with respect to phosphorus removal",
-        )
-        ## OR make indexed parameter with solute list. solute list comes from property_package.solvent_set
+            doc="Electricity intensity with respect to solute removal",
+        ) # ## indexed with solute list. solute list comes from property_package.solvent_set
 
         @self.Constraint(
             self.flowsheet().time,
             doc="Constraint for electricity consumption based on phosphorus removal",
         )
         def electricity_consumption(b, t):
-            return b.electricity[t] == (
-                b.energy_electric_flow_mass
+            return b.electricity[t] == sum(
+                b.energy_electric_flow_mass[j] 
                 * pyunits.convert(
-                    b.properties_byproduct[t].get_material_flow_terms("Liq", "S_PO4"),
+                    b.properties_byproduct[t].get_material_flow_terms("Liq", j),
                     to_units=pyunits.kg / pyunits.hour,
                 )
+                for j in b.config.property_package.solute_set
             )
 
         self.magnesium_chloride_dosage = Var(
