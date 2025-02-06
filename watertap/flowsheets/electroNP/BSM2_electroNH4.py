@@ -18,7 +18,7 @@ but comprises different specifications for default values than BSM2.
 """
 
 # Some more information about this module
-__author__ = "Chenyu Wang, Adam Atia, Alejandro Garciadiego, Marcus Holly"
+__author__ = "Chenyu Wang, Adam Atia, Alejandro Garciadiego, Marcus Holly, adapted for NH4 Daly Wettermark"
 
 import pyomo.environ as pyo
 from pyomo.network import Arc, SequentialDecomposition
@@ -86,19 +86,70 @@ from watertap.costing.unit_models.clarifier import (
     cost_primary_clarifier,
 )
 
-from plot_network import plot_network
+from watertap.flowsheets.plot_network import plot_network
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from idaes.core.util.model_diagnostics import DiagnosticsToolbox
 
+import logging
+
+# Set the logging level for the specific logger
+idaeslog.getLogger("idaes.core.util.scaling").setLevel(logging.ERROR)
+
+# Alternatively, set the root logger level if you want to suppress all warnings
+logging.getLogger().setLevel(logging.ERROR)
+
+import json
+import os
+
+this_file_dir = os.path.dirname(os.path.abspath(__file__))
+
+from parameter_sweep.parallel.parallel_manager_factory import create_parallel_manager
+from base_values import *
+
 # Set up logger
 _log = idaeslog.getLogger(__name__)
+
+
+def get_stream_dict(m):
+    return {
+        "FeedWater__MX3": m.fs.FeedWater.outlet,
+        "MX3__CL": m.fs.CL.inlet,
+        "CL__MX1": m.fs.CL.effluent,
+        "CL__MX4": m.fs.CL.underflow,
+        "MX4__translator_asm2d_adm1": m.fs.MX4.outlet,
+        "translator_asm2d_adm1__AD": m.fs.translator_asm2d_adm1.inlet,
+        "AD__translator_adm1_asm2d": m.fs.AD.liquid_outlet,
+        "translator_adm1_asm2d__MX3": m.fs.translator_adm1_asm2d.inlet,
+        "P1__MX1": m.fs.P1.outlet,
+        "MX1__R1": m.fs.R1.inlet,
+        "R1__R2": m.fs.R1.outlet,
+        "R2__MX2": m.fs.R2.outlet,
+        "R3__R4": m.fs.R3.outlet,
+        "R4__R5": m.fs.R4.outlet,
+        "R5__R6": m.fs.R5.outlet,
+        "R6__R7": m.fs.R6.outlet,
+        "R7__SP1": m.fs.R7.outlet,
+        "SP1__CL2": m.fs.SP1.overflow,
+        "SP1__MX2": m.fs.SP1.underflow,
+        "MX2__R3": m.fs.MX2.outlet,
+        "CL2__SP2": m.fs.CL2.underflow,
+        "thickener__MX4": m.fs.thickener.underflow,
+        "thickener__MX3": m.fs.thickener.overflow,
+        "MX4__translator_asm2d_adm1": m.fs.translator_asm2d_adm1.inlet,
+        "translator_asm2d_adm1__AD": m.fs.translator_asm2d_adm1.outlet,
+        "AD__translator_adm1_asm2d": m.fs.translator_adm1_asm2d.inlet,
+        "translator_adm1_asm2d__dewater": m.fs.translator_adm1_asm2d.outlet,
+        "CL2__Treated": m.fs.Treated.inlet,
+        "dewater__Sludge": m.fs.Sludge.inlet,
+    }
 
 
 def main(has_electroNP=False):
     m = build_flowsheet(has_electroNP=has_electroNP)
     add_costing(m)
+
     set_operating_conditions(m)
 
     for mx in m.fs.mixers:
@@ -107,30 +158,32 @@ def main(has_electroNP=False):
     m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
     print(f"DOF before initialization: {degrees_of_freedom(m)}")
 
+    initialize_system(m, has_electroNP=has_electroNP, outlvl=idaeslog.INFO)
+    for mx in m.fs.mixers:
+        mx.pressure_equality_constraints[0.0, 2].deactivate()
+    m.fs.MX3.pressure_equality_constraints[0.0, 2].deactivate()
+    m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
+    print(f"DOF after initialization: {degrees_of_freedom(m)}")
     db = DiagnosticsToolbox(m)
     db.report_structural_issues()
-    db.display_variables_with_extreme_jacobians()
-
-    # initialize_system(m, has_electroNP=has_electroNP)
+    # db.display_variables_with_extreme_jacobians()
+    # db.display_underconstrained_set()
+    # db.display_potential_evaluation_errors()
     # db.report_numerical_issues()
-    #for mx in m.fs.mixers:
-        #mx.pressure_equality_constraints[0.0, 2].deactivate()
-    #m.fs.MX3.pressure_equality_constraints[0.0, 2].deactivate()
-    #m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
-    #print(f"DOF after initialization: {degrees_of_freedom(m)}")
-    
-    # results = solve(m)
 
-    # pyo.assert_optimal_termination(results)
-    # check_solve(
-    #     results,
-    #     checkpoint="re-solve with controls in place",
-    #     logger=_log,
-    #     fail_flag=True,
-    # )
+    results = solve(m)
+
+    pyo.assert_optimal_termination(results)
+    check_solve(
+        results,
+        checkpoint="re-solve with controls in place",
+        logger=_log,
+        fail_flag=True,
+    )
 
     results = 0
     return m, results
+
 
 def build_flowsheet(has_electroNP=False):
     m = pyo.ConcreteModel()
@@ -280,7 +333,9 @@ def build_flowsheet(has_electroNP=False):
     # ======================================================================
     # ElectroN-P
     if has_electroNP is True:
-        m.fs.electroNP = ElectroNPZO(property_package=m.fs.props_ASM2D) # could also add component set, as a dict. or make list dependent on property package
+        m.fs.electroNP = ElectroNPZO(
+            property_package=m.fs.props_ASM2D
+        )  # could also add component set, as a dict. or make list dependent on property package
 
     # ======================================================================
     # Product Blocks
@@ -412,6 +467,26 @@ def build_flowsheet(has_electroNP=False):
 
 
 def set_operating_conditions(m):
+    # eps = 1e-8
+    # for R in m.fs.aerobic_reactors:
+    #     R.volume[0].setlb(eps)
+    #     R.outlet.conc_mass_comp[0, "S_O2"].setlb(eps)
+
+    # Set bounds for AD liquid phase reactions
+    # if hasattr(m.fs, 'AD'):
+    #     m.fs.AD.liquid_phase.reactions[0.0].S_H.setlb(eps)
+    #     m.fs.AD.liquid_phase.reactions[0.0].conc_mol_co2.setlb(eps)
+    #     m.fs.AD.liquid_phase.reactions[0.0].conc_mol_hco3.setlb(eps)
+    #     m.fs.AD.liquid_phase.reactions[0.0].conc_mol_nh4.setlb(eps)
+    #     m.fs.AD.liquid_phase.reactions[0.0].conc_mol_nh3.setlb(eps)
+    # m.fs.AD.liquid_phase.properties_in[0.0].flow_vol.setlb(eps)
+
+    # m.fs.AD.liquid_phase.properties_out[0.0].conc_mass_comp["S_IP"].setlb(eps)
+    # m.fs.AD.liquid_phase.properties_out[0.0].conc_mass_comp["S_IN"].setlb(eps)
+    # for R in [m.fs.R1, m.fs.R3, m.fs.R4, m.fs.R5, m.fs.R6, m.fs.R7]:
+    #     for comp in R.control_volume.properties_out[0.0].conc_mass_comp:
+    #         R.control_volume.properties_out[0.0].conc_mass_comp[comp].setlb(eps)
+
     # Feed Water Conditions
     print(f"DOF before feed: {degrees_of_freedom(m)}")
     m.fs.FeedWater.flow_vol.fix(20935.15 * pyo.units.m**3 / pyo.units.day)
@@ -528,45 +603,34 @@ def set_operating_conditions(m):
 
     # ElectroNP
     if m.fs.has_electroNP is True:
-        m.fs.electroNP.energy_electric_flow_mass["S_NH4"].fix(
-            0.4 * pyo.units.kWh / pyo.units.kg
-        )
         m.fs.electroNP.magnesium_chloride_dosage.fix(0.388)
-        P_removal = 0.1
-        NH4_removal = 0.5
-        m.fs.electroNP.P_removal = P_removal
-        m.fs.electroNP.NH4_removal = NH4_removal
-        m.fs.electroNP.N_removal = 0.1
+        for comp in m.fs.electroNP.energy_electric_flow_mass:
+            if comp != "S_NH4":
+                m.fs.electroNP.energy_electric_flow_mass[comp].fix(0)
+            else:
+                m.fs.electroNP.energy_electric_flow_mass[comp].fix(
+                    60 * pyo.units.kWh / pyo.units.kg
+                )
+
+        m.fs.electroNP.P_removal = 0.3
+        m.fs.electroNP.NH4_removal = 0.6
+        m.fs.electroNP.NO3_removal = 0.0
+        m.fs.electroNP.NO2_removal = 0.0
         m.fs.electroNP.frac_mass_H2O_treated[0].fix(0.99)
 
     def scale_variables(m):
         for var in m.fs.component_data_objects(pyo.Var, descend_into=True):
             if "flow_vol" in var.name:
-                if "thickener" in var.parent_component().name or "AD" in var.parent_component().name:
-                    print(var.name)
-                    print(var.value)
-                    iscale.set_scaling_factor(var, 0)
-                else:
-                    iscale.set_scaling_factor(var, 1e-4)
+                iscale.set_scaling_factor(var, 1e-4)
             if "temperature" in var.name:
                 iscale.set_scaling_factor(var, 1e-2)
-            if "pressure" in var.name and not "pressure_sat" in var.name:
+            if "pressure" in var.name:
                 iscale.set_scaling_factor(var, 1e-4)
             if "conc_mass_comp" in var.name:
                 iscale.set_scaling_factor(var, 1e1)
-            # if "work" in var.name:
-            #     iscale.set_scaling_factor(var, 1e6)
-            # if "deltaP" in var.name:
-            #     iscale.set_scaling_factor(var, 1e5)
             # if "heat" in var.name:
-            #     iscale.set_scaling_factor(var, 1e9)
-            # if "reaction_rate" in var.name:
-            #     iscale.set_scaling_factor(var, 1e-4)
-            # if "rate_reaction_extent" in var.name:
-            #     iscale.set_scaling_factor(var, 1e-4)
-            if "rate_reaction_generation" in var.name:
-                iscale.set_scaling_factor(var, 1e-5)
-                
+            #     iscale.set_scaling_factor(var, 1e8)
+
     for unit in ("R1", "R2", "R3", "R4", "R5", "R6", "R7"):
         block = getattr(m.fs, unit)
         iscale.set_scaling_factor(
@@ -583,7 +647,42 @@ def set_operating_conditions(m):
     iscale.calculate_scaling_factors(m)
 
 
-def initialize_system(m, has_electroNP=False):
+with open(os.path.join(this_file_dir, "R3_coeffs.json")) as f:
+    R3_coeffs = json.load(f)
+with open(os.path.join(this_file_dir, "translator_coeffs.json")) as f:
+    translator_coeffs = json.load(f)
+import random
+
+
+def get_adjusted_values(base_values, coeffs, NH4_removal, P_removal, EI):
+    """Calculate adjusted values based on coefficients and removal rates
+
+    Args:
+        base_values (dict): Base case concentrations
+        coeffs (dict): Coefficients for adjustments
+        NH4_removal (float): Fraction of ammonia removed
+        P_removal (float): Fraction of phosphorus removed
+        EI (float): Energy intensity value
+
+    Returns:
+        dict: Adjusted values
+    """
+    adj_values = {}
+    for key, val in base_values.items():
+        coeffs_key = coeffs[key]
+        adj_values[key] = (
+            val
+            + coeffs_key["NH4_removal"] * NH4_removal
+            + coeffs_key["P_removal"] * P_removal
+            + coeffs_key["EI"] * EI
+            + coeffs_key["NH4_removal^2"] * NH4_removal**2
+            + coeffs_key["P_removal^2"] * P_removal**2
+            + coeffs_key["EI^2"] * EI**2
+        )
+    return adj_values
+
+
+def initialize_system(m, has_electroNP=False, outlvl=idaeslog.INFO):
     # Initialize flowsheet
     # Apply sequential decomposition - 1 iteration should suffice
     seq = SequentialDecomposition()
@@ -594,128 +693,121 @@ def initialize_system(m, has_electroNP=False):
     G = seq.create_graph(m)
     # Uncomment this code to see tear set and initialization order
     order = seq.calculation_order(G)
-    print("Initialization Order")
+    _log.log(outlvl, "Initialization Order")
     for o in order:
-        print(o[0].name)
+        _log.log(outlvl, o[0].name)
 
-    if has_electroNP:
-        # P_removal = 0.65 - 0.95
+    def generate_tear_guesses(P_removal, NH4_removal):
+        """Generate tear guesses based on P and NH4 removal rates
+
+        Args:
+            P_removal (float): Fraction of phosphorus removed (no default)
+            NH4_removal (float): Fraction of ammonia removed (no default)
+
+        Returns:
+            tuple: (tear_guesses, tear_guesses2) dictionaries containing initial guesses
+        """
+
+        # Get energy intensity value
+        if has_electroNP:
+            EI = pyo.value(m.fs.electroNP.energy_electric_flow_mass["S_NH4"])
+        else:
+            EI = 0
+
+        adj_values = get_adjusted_values(
+            base_values_R3, R3_coeffs, NH4_removal, P_removal, EI
+        )
+        adj_values2 = get_adjusted_values(
+            base_values_translator, translator_coeffs, NH4_removal, P_removal, EI
+        )
+
         tear_guesses = {
             "flow_vol": {0: 1.2366},
-            "conc_mass_comp": {
-                (0, "S_A"): 0.0006,
-                (0, "S_F"): 0.0004,
-                (0, "S_I"): 0.057,
-                (0, "S_N2"): 0.04,
-                (0, "S_NH4"): 0.006,
-                (0, "S_NO3"): 0.002,
-                (0, "S_O2"): 0.0019,
-                (0, "S_PO4"): 0.09,
-                (0, "S_K"): 0.37,
-                (0, "S_Mg"): 0.020,
-                (0, "S_IC"): 0.13,
-                (0, "X_AUT"): 0.085,
-                (0, "X_H"): 3.5,
-                (0, "X_I"): 3.1,
-                (0, "X_PAO"): 3.4,
-                (0, "X_PHA"): 0.087,
-                (0, "X_PP"): 1.1,
-                (0, "X_S"): 0.057,
-            },
+            "conc_mass_comp": {(0, key): val for key, val in adj_values.items()},
             "temperature": {0: 308.15},
             "pressure": {0: 101325},
         }
 
         tear_guesses2 = {
             "flow_vol": {0: 0.003},
-            "conc_mass_comp": {
-                (0, "S_A"): 0.1,
-                (0, "S_F"): 0.15,
-                (0, "S_I"): 0.057,
-                (0, "S_N2"): 0.034,
-                (0, "S_NH4"): 0.025,
-                (0, "S_NO3"): 0.0015,
-                (0, "S_O2"): 0.0013,
-                (0, "S_PO4"): 0.1,
-                (0, "S_K"): 0.38,
-                (0, "S_Mg"): 0.024,
-                (0, "S_IC"): 0.074,
-                (0, "X_AUT"): 0.21,
-                (0, "X_H"): 23,
-                (0, "X_I"): 11,
-                (0, "X_PAO"): 10.5,
-                (0, "X_PHA"): 0.006,
-                (0, "X_PP"): 2.7,
-                (0, "X_S"): 3.9,
-            },
+            "conc_mass_comp": {(0, key): val for key, val in adj_values2.items()},
             "temperature": {0: 308.15},
             "pressure": {0: 101325},
         }
 
+        return tear_guesses, tear_guesses2
+
+    if has_electroNP:
+        tear_guesses, tear_guesses2 = generate_tear_guesses(
+            P_removal=pyo.value(m.fs.electroNP.P_removal),
+            NH4_removal=pyo.value(m.fs.electroNP.NH4_removal),
+        )
     else:
-        tear_guesses = {
-            "flow_vol": {0: 1.2368},
-            "conc_mass_comp": {
-                (0, "S_A"): 0.0006,
-                (0, "S_F"): 0.0004,
-                (0, "S_I"): 0.057,
-                (0, "S_N2"): 0.047,
-                (0, "S_NH4"): 0.0075,
-                (0, "S_NO3"): 0.003,
-                (0, "S_O2"): 0.0019,
-                (0, "S_PO4"): 0.73,
-                (0, "S_K"): 0.37,
-                (0, "S_Mg"): 0.020,
-                (0, "S_IC"): 0.13,
-                (0, "X_AUT"): 0.11,
-                (0, "X_H"): 3.5,
-                (0, "X_I"): 3.2,
-                (0, "X_PAO"): 3.2,
-                (0, "X_PHA"): 0.084,
-                (0, "X_PP"): 1.07,
-                (0, "X_S"): 0.057,
-            },
-            "temperature": {0: 308.15},
-            "pressure": {0: 101325},
-        }
-
-        tear_guesses2 = {
-            "flow_vol": {0: 0.003},
-            "conc_mass_comp": {
-                (0, "S_A"): 0.097,
-                (0, "S_F"): 0.15,
-                (0, "S_I"): 0.057,
-                (0, "S_N2"): 0.036,
-                (0, "S_NH4"): 0.03,
-                (0, "S_NO3"): 0.002,
-                (0, "S_O2"): 0.0013,
-                (0, "S_PO4"): 0.74,
-                (0, "S_K"): 0.38,
-                (0, "S_Mg"): 0.024,
-                (0, "S_IC"): 0.075,
-                (0, "X_AUT"): 0.28,
-                (0, "X_H"): 23.4,
-                (0, "X_I"): 11.4,
-                (0, "X_PAO"): 10.1,
-                (0, "X_PHA"): 0.0044,
-                (0, "X_PP"): 2.7,
-                (0, "X_S"): 3.9,
-            },
-            "temperature": {0: 308.15},
-            "pressure": {0: 101325},
-        }
+        tear_guesses, tear_guesses2 = generate_tear_guesses(P_removal=0, NH4_removal=0)
 
     # Pass the tear_guess to the SD tool
     seq.set_guesses_for(m.fs.R3.inlet, tear_guesses)
     seq.set_guesses_for(m.fs.translator_asm2d_adm1.inlet, tear_guesses2)
 
     def function(unit):
-        unit.initialize(outlvl=idaeslog.INFO, solver="ipopt-watertap")
+        try:
+            unit.initialize(outlvl=outlvl, solver="ipopt-watertap")
+        except:
+            print(f"Failed to initialize {unit.name}")
 
+    # First try initializing all units
     seq.run(m, function)
+
+    # # If MX2 failed, retry with perturbed coefficients
+    # if hasattr(m.fs, 'MX2'):
+    #     try:
+    #         m.fs.MX2.initialize(outlvl=outlvl, solver="ipopt-watertap")
+    #         print('MX2 initialized successfully')
+    #     except:
+    #         print("Retrying MX2 initialization with perturbed R3 coefficients...")
+    #         for attempt in range(5):
+    #             try:
+    #                 # Randomly perturb each coefficient by up to ±2%
+    #                 perturbed_R3_coeffs = {
+    #                     key: {
+    #                         k: v * (1 + (random.random() * 0.04 - 0.02))
+    #                         for k, v in val.items()
+    #                     }
+    #                     for key, val in R3_coeffs.items()
+    #                 }
+
+    #                 # Get new adjusted values with perturbed coefficients
+    #                 new_adj_values = get_adjusted_values(
+    #                     base_values_R3,
+    #                     perturbed_R3_coeffs,
+    #                     NH4_removal=pyo.value(m.fs.electroNP.NH4_removal),
+    #                     P_removal=pyo.value(m.fs.electroNP.P_removal),
+    #                     EI=pyo.value(m.fs.electroNP.energy_electric_flow_mass["S_NH4"])
+    #                 )
+
+    #                 # Create new tear guesses with perturbed values
+    #                 new_tear_guesses = {
+    #                     "flow_vol": tear_guesses["flow_vol"],
+    #                     "conc_mass_comp": {(0, key): val
+    #                                      for key, val in new_adj_values.items()},
+    #                     "temperature": tear_guesses["temperature"],
+    #                     "pressure": tear_guesses["pressure"]
+    #                 }
+
+    #                 seq.set_guesses_for(m.fs.R3.inlet, new_tear_guesses)
+    #                 m.fs.MX2.initialize(outlvl=outlvl, solver="ipopt-watertap")
+    #                 print(f"Successfully initialized MX2 on attempt {attempt+1}")
+    #                 return
+    #             except:
+    #                 continue
+    #         print("All 5 retry attempts for MX2 initialization failed")
+
 
 def add_costing(m):
     """Add costing block"""
+    m.fs.FeedWater.properties[0].flow_vol.setlb(0)
+    m.fs.Treated.properties[0].flow_vol.setlb(0)
+
     m.fs.costing = WaterTAPCosting()
 
     m.fs.costing.base_currency = pyo.units.USD_2020
@@ -736,17 +828,15 @@ def add_costing(m):
         costing_method=cost_circular_clarifier,
     )
 
-    # m.fs.RADM.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
-    # m.fs.DU.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
-    # m.fs.TU.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
-
     # TODO: Leaving out mixer costs; consider including later
 
     # process costing and add system level metrics
 
-    if hasattr(m.fs, 'electroNP'):
-        m.fs.electroNP.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
-        m.fs.costing.electroNP.phosphorus_recovery_value = 0.1 # TODO: add NH4 removal value
+    if hasattr(m.fs, "electroNP"):
+        m.fs.electroNP.costing = UnitModelCostingBlock(
+            flowsheet_costing_block=m.fs.costing
+        )
+        m.fs.costing.electroNP.phosphorus_recovery_value = 0.0
         m.fs.costing.electroNP.ammonia_recovery_value = 0.1
 
     m.fs.costing.cost_process()
@@ -755,80 +845,147 @@ def add_costing(m):
     m.fs.costing.add_LCOW(m.fs.FeedWater.properties[0].flow_vol)
     m.fs.costing.add_specific_energy_consumption(m.fs.FeedWater.properties[0].flow_vol)
 
-    # m.fs.objective = pyo.Objective(expr=m.fs.costing.LCOW)
+    if hasattr(m.fs, "electroNP"):
+        m.fs.costing.aggregate_flow_electricity.setlb(0)
+        # m.fs.costing.aggregate_flow_magnesium_chloride.setlb(0)
+        # m.fs.costing.aggregate_flow_phosphorus_salt_product.setlb(0)
+        # m.fs.costing.aggregate_flow_ammonia_product.setlb(0)
+        for key in m.fs.costing.aggregate_flow_costs:
+            m.fs.costing.aggregate_flow_costs[key].setlb(0)
+
     iscale.set_scaling_factor(m.fs.costing.LCOW, 1e3)
-    iscale.set_scaling_factor(m.fs.costing.total_capital_cost, 1e-7)
-    iscale.set_scaling_factor(m.fs.costing.total_capital_cost, 1e-5)
+    iscale.set_scaling_factor(m.fs.costing.electricity_intensity, 1e-1)
+    # iscale.set_scaling_factor(m.fs.costing.total_capital_cost, 1e-7)
+    print(
+        f"Total operating cost constraint expression: {m.fs.costing.total_operating_cost_constraint.expr}"
+    )
+
 
 def solve(m, solver=None):
     if solver is None:
         solver = get_solver()
-    results = solver.solve(m, tee=True)
+    # solver.options['tol'] = 1e-2
+    # solver.options['max_iter'] = 1000
+    # m.fs.objective = pyo.Objective(expr=m.fs.costing.LCOW, sense=pyo.minimize)
+    results = solver.solve(m, tee=False)
+    print(f"P removal: {m.fs.electroNP.P_removal.value}")
+    print(f"NH4 removal: {m.fs.electroNP.NH4_removal.value}")
+    print(f"\nSolver completed with status: {results.solver.status}")
+    print(f"Termination condition: {results.solver.termination_condition}\n")
     check_solve(results, checkpoint="closing recycle", logger=_log, fail_flag=True)
     pyo.assert_optimal_termination(results)
-    # add_costing(m) # add costing after solve
+
+    stream_dict = get_stream_dict(m)
+    stream_table = create_stream_table_dataframe(stream_dict, time_point=0)
+    # save to csv with name f"BSM2_electroNH4_stream_table_N{pyo.value(m.fs.electroNP.NH4_removal)}_P{pyo.value(m.fs.electroNP.P_removal)}_E{pyo.value(m.fs.electroNP.energy_electric_flow_mass['S_NH4'])}.csv"
+    if m.fs.has_electroNP is False:
+        stream_table.to_csv(
+            os.path.join(
+                this_file_dir,
+                "initialization_training/BSM2_electroNH4_stream_table_without_electroNP.csv",
+            )
+        )
+    else:
+        stream_table.to_csv(
+            os.path.join(
+                this_file_dir,
+                f"initialization_training/BSM2_electroNH4_stream_table_N{pyo.value(m.fs.electroNP.NH4_removal):.2f}_P{pyo.value(m.fs.electroNP.P_removal):.2f}_E{pyo.value(m.fs.electroNP.energy_electric_flow_mass['S_NH4']):.2f}.csv",
+            )
+        )
+
     return results
 
 
-if __name__ == "__main__":
+run_parameter_sweep = False
+
+from pyomo.environ import Constraint
+
+
+def print_constraints(model):
+    for constraint in model.component_objects(Constraint, active=True):
+        print(f"Constraint: {constraint.name}")
+        for index in constraint:
+            print(f"  Index: {index}, Expression: {constraint[index].expr}")
+
+
+if __name__ == "__main__" and not run_parameter_sweep:
     # This method builds and runs a steady state activated sludge flowsheet.
     m, results = main(has_electroNP=True)
+    stream_dict = get_stream_dict(m)
+
     if m.fs.has_electroNP is False:
-        stream_table = create_stream_table_dataframe(
+        stream_dict["dewater__MX3"] = m.fs.dewater.overflow
+    else:
+        stream_dict.update(
             {
-                "Feed": m.fs.FeedWater.outlet,
-                # "R3 inlet": m.fs.R3.inlet,
-                # "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
-                "R1": m.fs.R1.outlet,
-                "R2": m.fs.R2.outlet,
-                "R3": m.fs.R3.outlet,
-                "R4": m.fs.R4.outlet,
-                "R5": m.fs.R5.outlet,
-                "R6": m.fs.R6.outlet,
-                "R7": m.fs.R7.outlet,
-                "thickener outlet": m.fs.thickener.underflow,
-                "ADM-ASM translator outlet": m.fs.translator_adm1_asm2d.outlet,
-                "dewater outlet": m.fs.dewater.overflow,
-                "Treated water": m.fs.Treated.inlet,
-                "Sludge": m.fs.Sludge.inlet,
-            },
-            time_point=0,
+                "dewater__MX3": m.fs.dewater.overflow,
+                "dewater__electroNP": m.fs.dewater.overflow,
+                "electroNP__MX3": m.fs.electroNP.treated,
+            }
+        )
+
+    stream_table = create_stream_table_dataframe(stream_dict, time_point=0)
+    # save to csv with name f"BSM2_electroNH4_stream_table_N{pyo.value(m.fs.electroNP.NH4_removal)}_P{pyo.value(m.fs.electroNP.P_removal)}_E{pyo.value(m.fs.electroNP.energy_electric_flow_mass['S_NH4'])}.csv"
+    if m.fs.has_electroNP is False:
+        stream_table.to_csv(
+            os.path.join(
+                this_file_dir,
+                "initialization_training/BSM2_electroNH4_stream_table_without_electroNP.csv",
+            )
         )
     else:
-        stream_table = create_stream_table_dataframe(
-            {
-                "Feed": m.fs.FeedWater.outlet,
-                "R3 inlet": m.fs.R3.inlet,
-                "ASM-ADM translator inlet": m.fs.translator_asm2d_adm1.inlet,
-                "R1": m.fs.R1.outlet,
-                "R2": m.fs.R2.outlet,
-                "R3": m.fs.R3.outlet,
-                "R4": m.fs.R4.outlet,
-                "R5": m.fs.R5.outlet,
-                "R6": m.fs.R6.outlet,
-                "R7": m.fs.R7.outlet,
-                "thickener outlet": m.fs.thickener.underflow,
-                "ADM-ASM translator outlet": m.fs.translator_adm1_asm2d.outlet,
-                "dewater outlet": m.fs.dewater.overflow,
-                "electroNP treated": m.fs.electroNP.treated,
-                "electroNP byproduct": m.fs.electroNP.byproduct,
-                "Treated water": m.fs.Treated.inlet,
-                "Sludge": m.fs.Sludge.inlet,
-            },
-            time_point=0,
-            
+        stream_table.to_csv(
+            os.path.join(
+                this_file_dir,
+                f"initialization_training/BSM2_electroNH4_stream_table_N{pyo.value(m.fs.electroNP.NH4_removal)}_P{pyo.value(m.fs.electroNP.P_removal)}_E{pyo.value(m.fs.electroNP.energy_electric_flow_mass['S_NH4'])}.csv",
+            )
         )
-    # print(stream_table_dataframe_to_string(stream_table))
 
-#     plot_network(m, stream_table, path_to_save="BSM2_electroNP_flowsheet.png")
+    if m.fs.has_electroNP is False:
+        plot_network(
+            m,
+            stream_table,
+            path_to_save=os.path.join(
+                this_file_dir,
+                "flowsheet_networksBSM2_electroNH4_flowsheet_without_electroNP.png",
+            ),
+            figsize=(12, 10),
+        )
+    else:
+        plot_network(
+            m,
+            stream_table,
+            path_to_save=os.path.join(
+                this_file_dir,
+                f"flowsheet_networks/BSM2_electroNH4_flowsheet_N{pyo.value(m.fs.electroNP.NH4_removal)}_P{pyo.value(m.fs.electroNP.P_removal)}_E{pyo.value(m.fs.electroNP.energy_electric_flow_mass['S_NH4'])}.png",
+            ),
+            figsize=(12, 10),
+        )
+
+    # print the model.fs.costing.electricity_intensity and LCOW
+    print(f"Electricity Intensity: {pyo.value(m.fs.costing.electricity_intensity)}")
+    print(f"LCOW: {pyo.value(m.fs.costing.LCOW)}")
+
+    print_constraints(m)
+
+
 from parameter_sweep import (
     LinearSample,
     parameter_sweep,
 )
 
+
 def build_model(**kwargs):
     # return main(has_electroNP=has_electroNP)[0]
     m = build_flowsheet(has_electroNP=True)
+
+    add_costing(m)
+
+    # deactivate capital cost constraints
+    # for c in m.fs.component_objects(pyo.Constraint, descend_into=True):
+    #     if "capital" in c.name:
+    #         c.deactivate()
+
     set_operating_conditions(m)
     for mx in m.fs.mixers:
         mx.pressure_equality_constraints[0.0, 2].deactivate()
@@ -843,66 +1000,189 @@ def build_model(**kwargs):
     m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
     print(f"DOF after initialization: {degrees_of_freedom(m)}")
 
-    add_costing(m) # add costing after solve
-
     return m
 
-def build_sweep_params(model, nx=1, **kwargs):
+
+def build_sweep_params(model, nx=2, **kwargs):
     sweep_params = {}
-    sweep_params["N removal"] = LinearSample(
-        model.fs.electroNP.N_removal, 0.1, 0.2, nx
+    sweep_params["NH4 removal %"] = LinearSample(
+        model.fs.electroNP.NH4_removal, 0.1, 0.95, nx
     )
-    sweep_params["N removal intensity"] = LinearSample(
-        model.fs.electroNP.energy_electric_flow_mass["S_NH4"], 0.4, 0.6, nx
+    sweep_params["P removal %"] = LinearSample(
+        model.fs.electroNP.P_removal, 0.2, 0.7, 2
     )
+    sweep_params["NH4 removal energy intensity (kwh/kg)"] = LinearSample(
+        model.fs.electroNP.energy_electric_flow_mass["S_NH4"], 1.0, 100.0, nx
+    )
+    # print("NH4 removal % values:", [v for v in LinearSample(0.0, 1.0, nx)])
+    # print("P removal % values:", [v for v in LinearSample(0.0, 1.0, nx)])
+    # print("NH4 removal energy intensity values:", [v for v in LinearSample(1, 100, nx)])
     return sweep_params
+
 
 def build_outputs(model, **kwargs):
     outputs = {}
-    outputs["Electricity Intensity"] = model.fs.costing.electricity_intensity
-    outputs["Treated Water Flow"] = model.fs.Treated.flow_vol[0]
-    outputs["Effluent NH4 Concentration"] = model.fs.Treated.conc_mass_comp[0, "S_NH4"]
+    try:
+        outputs["Electricity Intensity"] = model.fs.costing.electricity_intensity
+        outputs["Treated Water Flow"] = model.fs.Treated.flow_vol[0]
+        outputs["Effluent NH4 Concentration"] = model.fs.Treated.conc_mass_comp[
+            0, "S_NH4"
+        ]
+
+        # MX2 outlet concentrations
+        for comp in [
+            "S_A",
+            "S_F",
+            "S_I",
+            "S_N2",
+            "S_NH4",
+            "S_NO3",
+            "S_O2",
+            "S_PO4",
+            "S_K",
+            "S_Mg",
+            "S_IC",
+            "X_AUT",
+            "X_H",
+            "X_I",
+            "X_PAO",
+            "X_PHA",
+            "X_PP",
+            "X_S",
+        ]:
+            outputs[f"MX2_{comp}"] = model.fs.MX2.outlet.conc_mass_comp[0, comp]
+
+        # MX4 outlet concentrations
+        for comp in [
+            "S_A",
+            "S_F",
+            "S_I",
+            "S_N2",
+            "S_NH4",
+            "S_NO3",
+            "S_O2",
+            "S_PO4",
+            "S_K",
+            "S_Mg",
+            "S_IC",
+            "X_AUT",
+            "X_H",
+            "X_I",
+            "X_PAO",
+            "X_PHA",
+            "X_PP",
+            "X_S",
+        ]:
+            outputs[f"MX4_{comp}"] = model.fs.MX4.outlet.conc_mass_comp[0, comp]
+
+        outputs["P_removal"] = model.fs.electroNP.P_removal
+        outputs["NH4_removal"] = model.fs.electroNP.NH4_removal
+        outputs["EI"] = model.fs.electroNP.energy_electric_flow_mass["S_NH4"]
+        outputs["LCOW"] = model.fs.costing.LCOW
+    except:
+        print("Unable to solve")
+        # Return empty values if solve fails
+        for key in outputs:
+            outputs[key] = None
     return outputs
 
-def reinitialize_function(model):
+
+def reinitialize_system(model):
+    set_operating_conditions(model)
     initialize_system(model, has_electroNP=True)
 
-def run_analysis(case_num=1, interpolate_nan_outputs=True, output_filename=None):
+
+# Create a parallel manager with the desired backend
+parallel_manager = create_parallel_manager(
+    parallel_manager_class=None,  # Automatically selects based on backend
+    number_of_subprocesses=4,  # Number of subprocesses for shared memory backends
+    parallel_back_end="MPI",  # Choose your backend here
+)
+
+
+def run_analysis(case_num=7, interpolate_nan_outputs=True, output_filename=None):
     if output_filename is None:
-        output_filename = f"sensitivity_{case_num}"
+        output_filename = this_file_dir + f"/sensitivity_{case_num}"
 
     global_results = parameter_sweep(
         build_model,
         build_sweep_params,
         build_outputs,
         csv_results_file_name=f"{output_filename}.csv",
-        h5_results_file_name=f"{output_filename}.h5",
+        # h5_results_file_name=f"{output_filename}.h5",
         optimize_function=solve,
-        # reinitialize_function=reinitialize_function,
+        reinitialize_function=reinitialize_system,
         interpolate_nan_outputs=interpolate_nan_outputs,
     )
 
     return global_results
 
-run_parameter_sweep = False
+
 if run_parameter_sweep:
     results = run_analysis()
-
     # create dataframe of results
     df_results = pd.DataFrame()
-    # df_results["Feed Flow (m3/d)"] = results[1]["sweep_params"]["feed_flow"]["value"]
-    df_results["N removal"] = results[1]["sweep_params"]["N removal"]["value"]
-    df_results["N removal intensity"] = results[1]["sweep_params"]["N removal intensity"]["value"]
-    df_results["Electricity Intensity"] = results[1]["outputs"]["Electricity Intensity"]["value"]
+    df_results["NH4 removal %"] = results[1]["sweep_params"]["NH4 removal %"]["value"]
+    df_results["NH4 removal energy intensity (kwh/kg)"] = results[1]["sweep_params"][
+        "NH4 removal energy intensity (kwh/kg)"
+    ]["value"]
+    df_results["P removal %"] = results[1]["sweep_params"]["P removal %"]["value"]
+    df_results["Electricity Intensity"] = results[1]["outputs"][
+        "Electricity Intensity"
+    ]["value"]
+    df_results["LCOW"] = results[1]["outputs"]["LCOW"]["value"]
 
-    pivot_df = df_results.pivot(index="N removal", columns="N removal intensity", values="Electricity Intensity")
-    pivot_df = pivot_df.round(2)
-    # round index and column names to 2 decimal
-    pivot_df.index = pivot_df.index.round(2)
-    pivot_df.columns = pivot_df.columns.round(2)
+    df_results_fixed_p = df_results[
+        df_results["P removal %"] == list(df_results["P removal %"])[0]
+    ]
+    # Create pivot table for electricity intensity
+    pivot_df_ei = df_results_fixed_p.pivot(
+        index="NH4 removal %",
+        columns="NH4 removal energy intensity (kwh/kg)",
+        values="Electricity Intensity",
+    )
+    pivot_df_ei = pivot_df_ei.round(3)
+    pivot_df_ei.index = pivot_df_ei.index.round(3)
+    pivot_df_ei.columns = pivot_df_ei.columns.round(3)
 
-    heatmap = sns.heatmap(pivot_df, annot=True, cmap='YlOrBr', cbar_kws={'label': 'Plant-Wide Electricity Intensity (kWh/m3)'})
-    plt.xlabel("N removal (%) from Anaerobic Digestate", fontsize=12)
-    plt.ylabel("Energy intensity of N removal (kWh/kg N)", fontsize=12)
-    plt.savefig("sensitivity_heatmap.png", dpi=300)
+    # Create pivot table for LCOW
+    pivot_df_lcow = df_results_fixed_p.pivot(
+        index="NH4 removal %",
+        columns="NH4 removal energy intensity (kwh/kg)",
+        values="LCOW",
+    )
+    pivot_df_lcow = pivot_df_lcow.round(3)
+    pivot_df_lcow.index = pivot_df_lcow.index.round(3)
+    pivot_df_lcow.columns = pivot_df_lcow.columns.round(3)
+
+    # Plot electricity intensity heatmap
+    plt.figure(figsize=(6, 6))
+    heatmap1 = sns.heatmap(
+        pivot_df_ei,
+        annot=True,
+        cmap="YlOrBr",
+        cbar_kws={"label": "Plant-Wide Electricity Intensity (kWh/m3)"},
+    )
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.xlabel("NH4 Removal Energy Intensity (kWh/kg)", fontsize=12)
+    plt.ylabel("NH4 Removal %", fontsize=12)
+    plt.savefig(f"sensitivity_heatmap_ei_nh4_val_0.1.png", dpi=300, bbox_inches="tight")
+    plt.show()
+
+    # Plot LCOW heatmap
+    plt.figure(figsize=(6, 6))
+    heatmap2 = sns.heatmap(
+        pivot_df_lcow,
+        annot=True,
+        cmap="YlOrBr",
+        cbar_kws={"label": "LCOT ($/m3) including NH4 recovery value"},
+    )
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.xlabel("NH4 Removal Energy Intensity (kWh/kg)", fontsize=12)
+    plt.ylabel("NH4 Removal %", fontsize=12)
+    plt.savefig(
+        f"sensitivity_heatmap_lcow_nh4_val_0.1.png", dpi=300, bbox_inches="tight"
+    )
     plt.show()
