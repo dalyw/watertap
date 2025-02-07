@@ -48,6 +48,8 @@ class ElectroNPZOdata(SeparatorData):
     CONFIG.outlet_list = ["treated", "byproduct"]
     CONFIG.split_basis = SplittingType.componentFlow
 
+    # CONFIG.treated_components = ["S_PO4", "S_NH4", "S_NO3", "S_NO2"]
+
     def build(self):
         # Call UnitModel.build to set up dynamics
         super(ElectroNPZOdata, self).build()
@@ -104,17 +106,29 @@ class ElectroNPZOdata(SeparatorData):
         # Default solute concentration
         self.P_removal = Param(
             within=NonNegativeReals,
-            mutable=True,
-            default=0.98,
-            doc="Reference phosphorus removal fraction on a mass basis",
+            default=0.95,
+            doc="Reference removal fraction for P on a mass basis",
             units=pyunits.dimensionless,
         )
 
-        self.N_removal = Param(
+        self.NH4_removal = Param(
             within=NonNegativeReals,
-            mutable=True,
             default=0.3,
-            doc="Reference ammonia removal fraction on a mass basis",
+            doc="Reference removal fraction for NH4 on a mass basis",
+            units=pyunits.dimensionless,
+        )
+
+        self.NO3_removal = Param(
+            within=NonNegativeReals,
+            default=0.0,
+            doc="Reference removal fraction for NO3 on a mass basis",
+            units=pyunits.dimensionless,
+        )
+
+        self.NO2_removal = Param(
+            within=NonNegativeReals,
+            default=0.0,
+            doc="Reference removal fraction for NO2 on a mass basis",
             units=pyunits.dimensionless,
         )
 
@@ -134,9 +148,15 @@ class ElectroNPZOdata(SeparatorData):
             elif i == "S_PO4":
                 return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.P_removal
             elif i == "S_NH4":
-                return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.N_removal
+                return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.NH4_removal
+            elif i == "S_NO3":
+                return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.NO3_removal
+            elif i == "S_NO2":
+                return blk.removal_frac_mass_comp[t, "byproduct", i] == blk.NO2_removal
             else:
-                return blk.removal_frac_mass_comp[t, "byproduct", i] == 1e-7
+                return (
+                    blk.removal_frac_mass_comp[t, "byproduct", i] == 0
+                )  # assuming other ions not in byproduct
 
         self.electricity = Var(
             self.flowsheet().time,
@@ -146,21 +166,23 @@ class ElectroNPZOdata(SeparatorData):
         )
 
         self.energy_electric_flow_mass = Var(
+            self.config.property_package.solute_set,
             units=pyunits.kWh / pyunits.kg,
-            doc="Electricity intensity with respect to phosphorus removal",
-        )
+            doc="Electricity intensity with respect to solute removal",
+        )  # ## indexed with solute list. solute list comes from property_package.solvent_set
 
         @self.Constraint(
             self.flowsheet().time,
             doc="Constraint for electricity consumption based on phosphorus removal",
         )
         def electricity_consumption(b, t):
-            return b.electricity[t] == (
-                b.energy_electric_flow_mass
+            return b.electricity[t] == sum(
+                b.energy_electric_flow_mass[j]
                 * pyunits.convert(
-                    b.properties_byproduct[t].get_material_flow_terms("Liq", "S_PO4"),
+                    b.properties_byproduct[t].get_material_flow_terms("Liq", j),
                     to_units=pyunits.kg / pyunits.hour,
                 )
+                for j in b.config.property_package.solute_set
             )
 
         self.magnesium_chloride_dosage = Var(

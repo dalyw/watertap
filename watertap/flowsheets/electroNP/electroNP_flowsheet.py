@@ -299,5 +299,6 @@ if __name__ == "__main__":
     print(stream_table_dataframe_to_string(stream_table))
     display_costing(m)
 
-    from plot_network import plot_network
+    from watertap.flowsheets.plot_network import plot_network
+
     plot_network(m, stream_table, path_to_save="electroNP_flowsheet_network.png")

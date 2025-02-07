@@ -202,7 +202,7 @@ def add_estimates(df, base_values):
             r2_3var_quad = results["3var_quad"][2]
 
             improvement_threshold = 0.02  # 2% improvement required
-            min_r2_threshold = 0.7  # Minimum R2 score required
+            min_r2_threshold = 0.8  # Minimum R2 score required
 
             best_r2 = max(r2_2var_lin, r2_2var_quad, r2_3var_lin, r2_3var_quad)
 
