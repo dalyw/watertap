@@ -71,13 +71,15 @@ from watertap.costing.unit_models.clarifier import (
 from pyomo.util.check_units import assert_units_consistent
 
 
-def main(reactor_volume_equalities=False):
+def main(reactor_volume_equalities=False, starting_x_ba=0.0, x_ba_reduction=0.0):
     m = build()
-    set_operating_conditions(m)
+    set_operating_conditions(
+        m, starting_x_ba=starting_x_ba, x_ba_reduction=x_ba_reduction
+    )
 
     assert_degrees_of_freedom(m, 0)
     assert_units_consistent(m)
-    initialize_system(m)
+    initialize_system(m, starting_x_ba=starting_x_ba, x_ba_reduction=x_ba_reduction)
 
     assert_degrees_of_freedom(m, 0)
 
@@ -95,7 +97,7 @@ def main(reactor_volume_equalities=False):
     display_costing(m)
 
     setup_optimization(m, reactor_volume_equalities=reactor_volume_equalities)
-    results = solve(m, tee=True)
+    results = solve(m, tee=False)
     pyo.assert_optimal_termination(results)
     print("\n\n=============OPTIMIZATION RESULTS=============\n\n")
     # display_results(m)
@@ -283,7 +285,7 @@ def build():
     return m
 
 
-def set_operating_conditions(m):
+def set_operating_conditions(m, starting_x_ba, x_ba_reduction):
     # Feed Water Conditions
     m.fs.FeedWater.flow_vol.fix(20648 * pyo.units.m**3 / pyo.units.day)
     m.fs.FeedWater.temperature.fix(308.15 * pyo.units.K)
@@ -293,7 +295,9 @@ def set_operating_conditions(m):
     m.fs.FeedWater.conc_mass_comp[0, "X_I"].fix(92 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "X_S"].fix(363 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "X_BH"].fix(50 * pyo.units.g / pyo.units.m**3)
-    m.fs.FeedWater.conc_mass_comp[0, "X_BA"].fix(0 * pyo.units.g / pyo.units.m**3)
+    m.fs.FeedWater.conc_mass_comp[0, "X_BA"].fix(
+        starting_x_ba * (1 - x_ba_reduction) * pyo.units.g / pyo.units.m**3
+    )
     m.fs.FeedWater.conc_mass_comp[0, "X_P"].fix(0 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "S_O"].fix(0 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "S_NO"].fix(0 * pyo.units.g / pyo.units.m**3)
@@ -398,7 +402,7 @@ def set_operating_conditions(m):
     iscale.calculate_scaling_factors(m)
 
 
-def initialize_system(m):
+def initialize_system(m, starting_x_ba=0.0, x_ba_reduction=0.0):
     # Initialize flowsheet
     # Apply sequential decomposition - 1 iteration should suffice
     seq = SequentialDecomposition()
@@ -422,7 +426,7 @@ def initialize_system(m):
             (0, "X_I"): 1.532,
             (0, "X_S"): 0.069,
             (0, "X_BH"): 2.233,
-            (0, "X_BA"): 0.167,
+            (0, "X_BA"): (0.167 + 5 * starting_x_ba * (1 - x_ba_reduction)),
             (0, "X_P"): 0.964,
             (0, "S_O"): 0.0011,
             (0, "S_NO"): 0.0073,
@@ -443,7 +447,7 @@ def initialize_system(m):
             (0, "X_I"): 10.362,
             (0, "X_S"): 20.375,
             (0, "X_BH"): 10.210,
-            (0, "X_BA"): 0.553,
+            (0, "X_BA"): (0.553 + 5 * starting_x_ba * (1 - x_ba_reduction)),
             (0, "X_P"): 3.204,
             (0, "S_O"): 0.00025,
             (0, "S_NO"): 0.00169,
@@ -754,4 +758,4 @@ def display_performance_metrics(m):
 
 
 if __name__ == "__main__":
-    m, results = main()
+    m, results = main(x_ba_reduction=0.0)

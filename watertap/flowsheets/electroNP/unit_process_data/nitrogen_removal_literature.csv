@@ -1,0 +1,65 @@
+Process Group (2021),Process Group (2024),Process 2024,Process 2021,Tested on,Batch or Continuous,Product1,Product2,P Recovery Efficiency,Uncertainty,TAN Removal or Recovery Efficiency,Uncertainty,Energy Consumption (MJ/kg N),Uncertainty,Energy Consumption (kwh/kg N),Uncertainty,
+,Algal Process,High-Rate Algal Pond or Raceway Pond,,,,algal biomass,,0,,,,,,0.0,0.0,
+,,Hybrid Algal Photosynthesis and Ion Exchange (HAPIX),,,,algal biomass,ammonium,0,,,,,,0.0,0.0,
+,,Microalgal Processes,,,,algal biomass,,0,,,,,,0.0,0.0,
+,Bio-Electrodialysis,Bioelectroconcentration,,,,ammonium,,0,,,,,,0.0,0.0,
+,,Bipolar Bioelectrodialysis,,,,ammonium,,0,,,,,,0.0,0.0,
+,Electrodialysis,Bipolar Electrodialysis,,,,ammonium,,0,,,,,,0.0,0.0,
+,,Bipolar Electrodialysis with Bipolar Membrane,,,,ammonium,,0,,,,,,0.0,0.0,
+,,Electrodialysis,,,,ammonium,,0,,,,,,0.0,0.0,
+,Ion Exchange,Hybrid Anion Exchange,,,,ammonium,nitrate,0,,,,,,0.0,0.0,
+,,Ion Exchange,,,,ammonium,nitrate,0,,,,,,0.0,0.0,
+,Membrane Filtration,Nanofiltration,,,,ammonium,nitrate,0,,,,,,0.0,0.0,
+,,Reverse Osmosis,,,,ammonium,nitrate,0,,,,,,0.0,0.0,
+,Stripping and Absorption,Column Stripping and Absorption,,,,ammonia,,0,,,,,,0.0,0.0,
+,,Membrane Stripping and Absorption,,,,ammonia,,0,,,,,,0.0,0.0,
+ES + air stripping [1],Electrodialysis with Stripping and Absorption,EC + air stripping,Electrochemical Process with Column Stripping and Absorption,real urine,,ammonia,,0,,87.1,6,50,,13.9,0.0,45
+,,,,real urine,,ammonia,,0,,75,0.5,45.7,1.3,12.7,0.4,47
+,,,,real urine,,ammonia,,0,,76,0.6,45.7,1.3,12.7,0.4,
+,,,,real urine,,ammonia,,0,,76,,52.9,,14.7,0.0,
+,,,,real urine,,ammonia,,0,,58,,52.9,,14.7,0.0,
+,,,,real urine,,ammonia,,0,,65,,147.6,,41.0,0.0,
+,,,,real urine,,ammonia,,0,,76,,147.6,,41.0,0.0,
+,,,,dilute urine,,,,0,,41,2,60.5,5,16.8,1.4,55
+ES + membrane stripping [2],,ES + membrane stripping,Electrochemical Process with Membrane Stripping and Absorption or Transmembrane Chemisorption,real urine,,ammonia,,0,,49,9.3,16.6,4,4.6,1.1,46
+,,,,real urine,,ammonia,,0,,38.7,13.5,22.7,8.3,6.3,2.3,
+,,,,real urine,,ammonia,,0,,19.7,16.8,0.1,0.04,0.0,0.0,
+,,,,real urine,,ammonia,,0,,14.7,9.8,0.4,0.1,0.1,0.0,
+,,HRES + membrane stripping,,real urine,,ammonia,,0,,64,,30.5,,8.5,0.0,48
+,,,,real urine,,ammonia,,0,,73,,26.1,,7.3,0.0,
+,,,,real urine,,ammonia,,0,,60,,56.3,,15.6,0.0,
+,,EC + TMCS,,real urine,,ammonia,,0,,94,,2.3,,0.6,0.0,49
+,,,,real urine,,ammonia,,0,,83,,2.3,,0.6,0.0,
+,,,,real urine,,ammonia,,0,,99,,49.2,,13.7,0.0,
+,,,,real urine,,ammonia,,0,,93,,49.2,,13.7,0.0,
+,,,,real urine,,ammonia,,0,,100,,164.7,,45.8,0.0,
+,,,,real urine,,ammonia,,0,,101,,164.7,,45.8,0.0,
+,,,,real urine,,ammonia,,0,,27,,0.3,,0.1,0.0,
+,,,,real urine,,ammonia,,0,,27,,0.3,,0.1,0.0,
+,,,,real urine,,ammonia,,0,,43,,1.1,,0.3,0.0,
+,,,,real urine,,ammonia,,0,,37,,1.1,,0.3,0.0,
+,,,,real urine,,ammonia,,0,,92,,7.1,,2.0,0.0,
+,,,,real urine,,ammonia,,0,,84,,7.1,,2.0,0.0,
+,,,,real urine,,ammonia,,0,,89,,14.5,,4.0,0.0,
+,,,,real urine,,ammonia,,0,,83,,14.5,,4.0,0.0,
+,,,,real urine,,ammonia,,0,,63,,14.2,,3.9,0.0,
+,,,,real urine,,ammonia,,0,,56,,14.2,,3.9,0.0,
+,,,,real urine,,ammonia,,0,,92,,47.6,,13.2,0.0,
+,,,,real urine,,ammonia,,0,,77,,47.6,,13.2,0.0,
+,,ECS,Electrochemical Stripping (ECS),real urine,,,,,,60.6,,30.6,,8.5,0.0,1
+Thermal stripping + acid absorption [3],,Vacuum thermal stripping + acid absorption,,real urine,batch,,,,,78,,29,,8.1,0.0,50
+,,Thermal stripping + acid absorption,,real urine,batch,,,,,93,,0.02,,0.0,0.0,51
+BES [4],,MEC,,dilute urine,,,,,,31,59,4.9,1,1.4,0.3,52
+BES + membrane stripping [5],,MEC & TMCS,,dilute urine,,,,,,49,6,9,2.4,2.5,0.7,53
+BES + ED [6],,NSMEC,,dilute urine,fed-batch,,,,,61,,6.5,,1.8,0.0,54
+BES + air stripping [7],,BES + air stripping,,dilute urine,,,,,,51,0.5,21.7,6.4,6.0,1.8,55
+BES + ED [6],,MEC / ED,,dilute urine,,,,,,49.5,1.8,8.6,,2.4,0.0,56
+ED-DD [8],,ED-DD,,synthetic urine,,,,,,87,,14.2,,3.9,0.0,57
+,,,,synthetic urine,,,,,,83,,11.7,,3.3,0.0,
+,,,,synthetic urine,,,,,,68,,10.1,,2.8,0.0,
+,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,
+Footnotes:,,,,,,,,,,,,,,,,
+"EC stands for electrochemical cell, ES is electrochemical system, HRES is hydrogen-recycling electrochemical system, 
+TMCS is transmembrane chemisorption, MEC is microbial electrolysis cell, BES is bioelectrochemical system, 
+NSMEC is nutrient-separating microbial electrolysis cell, ED is electrodialysis, and DD is Donnan dialysis.",,,,,,,,,,,,,,,,
