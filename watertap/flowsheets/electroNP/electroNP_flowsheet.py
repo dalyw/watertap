@@ -155,7 +155,7 @@ def build_flowsheet():
     m.fs.AD.liquid_outlet.temperature.fix(308.15)
 
     # ElectroNP
-    m.fs.electroNP.energy_electric_flow_mass["S_PO4"].fix(0.044 * units.kWh / units.kg)
+    m.fs.electroNP.energy_electric_flow_mass.fix(0.044 * units.kWh / units.kg)
     m.fs.electroNP.magnesium_chloride_dosage.fix(0.388)
 
     # Costing

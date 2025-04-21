@@ -32,6 +32,8 @@ import idaes.core.util.scaling as iscale
 from watertap.core.util.initialization import check_dof, check_solve
 from watertap.unit_models.electrodialysis_1D import Electrodialysis1D
 
+# from watertap.unit_models.electrodialysis_0D import Electrodialysis0D
+
 from watertap.costing import WaterTAPCosting
 from watertap.property_models.multicomp_aq_sol_prop_pack import MCASParameterBlock
 
@@ -249,7 +251,7 @@ def initialize_system(m, solver=None):
     m.fs.separator.initialize(optarg=optarg, solver="ipopt-watertap")
     propagate_state(m.fs.s02)
     propagate_state(m.fs.s03)
-    m.fs.EDstack.initialize(optarg=optarg)
+    m.fs.EDstack.initialize_build(optarg=optarg)
     propagate_state(m.fs.s04)
     m.fs.product.initialize()
     propagate_state(m.fs.s05)

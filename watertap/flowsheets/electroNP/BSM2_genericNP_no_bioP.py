@@ -78,7 +78,7 @@ from watertap.unit_models.thickener import (
     ActivatedSludgeModelType as thickener_type,
 )
 from watertap.core.util.initialization import check_solve
-from watertap.unit_models.genericNP_ZO import genericNPZO
+from watertap.unit_models.genericNP_ZO import GenericNPZO
 
 from watertap.costing import WaterTAPCosting
 from watertap.costing.unit_models.clarifier import (
@@ -338,7 +338,7 @@ def build_flowsheet(has_genericNP=False):
     # ======================================================================
     # ElectroN-P
     if has_genericNP is True:
-        m.fs.genericNP = genericNPZO(
+        m.fs.genericNP = GenericNPZO(
             property_package=m.fs.props_ASM2D
         )  # could also add component set, as a dict. or make list dependent on property package
 
@@ -1139,6 +1139,7 @@ parallel_manager = create_parallel_manager(
     number_of_subprocesses=4,  # Number of subprocesses for shared memory backends
     parallel_back_end="MPI",  # Choose your backend here
 )
+# run with mpirun -np 10 python BSM2_electroNH4.py
 
 
 def run_analysis(case_num=11, interpolate_nan_outputs=True, output_filename=None):

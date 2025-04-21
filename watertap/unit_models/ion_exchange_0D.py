@@ -21,6 +21,8 @@ from pyomo.environ import (
     Suffix,
     log,
     units as pyunits,
+    Reals,
+    Constraint,
 )
 from pyomo.common.config import ConfigBlock, ConfigValue, In
 
@@ -232,8 +234,8 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
     CONFIG.declare(
         "regenerant",
         ConfigValue(
-            default=RegenerantChem.NaCl,
-            domain=In(RegenerantChem),
+            default="NaCl",
+            domain=str,
             description="Chemical used for regeneration of fixed bed",
         ),
     )
@@ -253,6 +255,24 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             default=IsothermType.langmuir,
             domain=In(IsothermType),
             description="Designates the isotherm type to use for equilibrium calculations",
+        ),
+    )
+
+    CONFIG.declare(
+        "regenerant_stoich_data",
+        ConfigValue(
+            default={},
+            domain=dict,
+            description="Stoichiometry data for regenerant",
+        ),
+    )
+
+    CONFIG.declare(
+        "regenerant_mw_data",
+        ConfigValue(
+            default={},
+            domain=dict,
+            description="Molecular weight data for regenerant",
         ),
     )
 
@@ -279,6 +299,8 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             raise ConfigurationError("Target ion must have non-zero charge.")
 
         self.scaling_factor = Suffix(direction=Suffix.EXPORT)
+
+        units_meta = self.config.property_package.get_metadata().get_derived_units
 
         self.process_flow = ControlVolume0DBlock(
             dynamic=False,
@@ -1175,6 +1197,54 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                 return (1 - b.c_norm_avg[j]) * prop_in.get_material_flow_terms(
                     "Liq", j
                 ) == -b.process_flow.mass_transfer_term[0, "Liq", j]
+
+        self.regenerant_mw = Param(
+            initialize=self.config.regenerant_mw_data[self.config.regenerant],
+            units=pyunits.kg / pyunits.mol,
+            doc="Molecular weight of regenerant",
+        )
+
+        self.regenerant_stoich = Param(
+            self.config.property_package.component_list,
+            initialize=lambda m, j: self.config.regenerant_stoich_data[
+                self.config.regenerant
+            ].get(j, 0),
+            mutable=True,
+            doc="Dissolution stoichiometry of regenerant",
+        )
+
+        self.flow_mass_regenerant = Var(
+            initialize=1e-3,
+            domain=Reals,
+            units=units_meta("mass") / units_meta("time"),
+            doc="Mass flowrate of regenerant",
+        )
+
+        self.flow_mol_regenerant = Var(
+            initialize=1e-3,
+            domain=Reals,
+            units=pyunits.mol / units_meta("time"),
+            doc="Molar flowrate of regenerant",
+        )
+
+        @self.Constraint(doc="Regenerant molar flow")
+        def eq_flow_mol_regenerant(b):
+            return b.flow_mass_regenerant / b.regenerant_mw == b.flow_mol_regenerant
+
+        @self.Constraint(
+            self.flowsheet().config.time,
+            self.config.property_package.component_list,
+            doc="Mass generation from regenerant dissolution",
+        )
+        def eq_regenerant_dissolution(b, t, j):
+            if j in self.config.regenerant_stoich_data[self.config.regenerant]:
+                return b.regeneration_stream[t].get_material_flow_terms("Liq", j) == (
+                    b.flow_mol_regenerant
+                    * b.regenerant_stoich[j]
+                    * b.config.property_package.mw_comp[j]
+                )
+            # for components not in the regenerant, returns Constraint.Skip
+            return Constraint.Skip
 
     def initialize_build(
         self,
