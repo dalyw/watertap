@@ -30,6 +30,7 @@ from watertap.property_models.multicomp_aq_sol_prop_pack import MCASParameterBlo
 from watertap.unit_models.ion_exchange_0D import IonExchange0D, RegenerantChem
 from watertap.costing import WaterTAPCosting
 from watertap.core.solvers import get_solver
+from idaes.core.util import DiagnosticsToolbox  # TEMPORARY
 
 import math
 
@@ -227,13 +228,9 @@ def set_operating_conditions(m, flow_in=0.05, conc_mass_in=0.1, solver=None):
     }
 
     component_list = list(m.fs.properties.component_list)
-
-    # Initialize regenerant comps to zero at feed
     for comp in component_list:
         if comp != target_ion and comp != "H2O":
-            var_args[("conc_mass_phase_comp", ("Liq", comp))] = (
-                0.0  # Initialize to zero
-            )
+            var_args[("conc_mass_phase_comp", ("Liq", comp))] = 0.0
 
     m.fs.feed.properties.calculate_state(
         var_args=var_args,
@@ -255,22 +252,23 @@ def set_operating_conditions(m, flow_in=0.05, conc_mass_in=0.1, solver=None):
     ix.bed_porosity.fix()
     ix.dimensionless_time.fix()
 
-    # Set regenerant flow rate
-    m.fs.ion_exchange.flow_mass_regenerant.fix(0.001)  # 1 g/s regenerant
-
-    # Initialize regenerant stream
-    regen_state = ix.regeneration_stream[0]
-    regen_state.flow_vol_phase["Liq"].fix(flow_in)
-    regen_state.pressure.fix(101325)
-    regen_state.temperature.fix(298)
-
-    # Calculate initial concentrations based on stoichiometry
     regenerant = ix.config.regenerant
     regenerant_stoich = ix.config.regenerant_stoich_data[regenerant]
     regenerant_mw = ix.config.regenerant_mw_data[regenerant]
-    flow_mol_regenerant = 0.001 / regenerant_mw  # molar flowrate of regenerant
 
-    # Set initial values for concentrations based on stoichiometry
+    # Calculate regenerant flow rate based on stoichiometry and sorbed mass
+    # First estimate the mass of target ion to be removed
+    prop_in = ix.process_flow.properties_in[0]
+    target_ion_flow = value(prop_in.flow_mol_phase_comp["Liq", target_ion])
+
+    regen_efficiency = 0.9  # TODO: adjust default values
+    flow_mol_regenerant = (target_ion_flow / regen_efficiency) / regenerant_mw
+    ix.flow_mol_regenerant.fix(flow_mol_regenerant)
+
+    # Initialize regenerant stream state
+    regen_state = ix.regeneration_stream[0]
+
+    # Calculate regenerant concentrations based on stoichiometry and sorbed mass
     for comp in component_list:
         if comp in regenerant_stoich:
             flow_mol_comp = flow_mol_regenerant * regenerant_stoich[comp]
@@ -303,6 +301,46 @@ def initialize_system(m):
     print("\nRegenerant Concentrations:")
     for comp in m.fs.properties.component_list:
         print(f"{comp}: {regen.conc_mass_phase_comp['Liq', comp].value}")
+
+    # TEMPORARY adding diagnostics
+    print("\nRunning Model Diagnostics:")
+    dt = DiagnosticsToolbox(ix)
+    dt.report_structural_issues()
+    # dt.display_underconstrained_set()
+    # dt.display_overconstrained_set()
+    dt.display_variables_near_bounds()
+    # dt.display_constraints_with_large_residuals()
+
+    # Initialize mass transfer terms
+    for comp in m.fs.properties.component_list:
+        if comp == ix.config.target_ion:
+            ix.process_flow.mass_transfer_term[0, "Liq", comp].set_value(-1e-3)
+        else:
+            ix.process_flow.mass_transfer_term[0, "Liq", comp].set_value(0.0)
+
+    # Initialize regenerant stream
+    regen_state = ix.regeneration_stream[0]
+
+    # Unfix all variables in regen state
+    for comp in m.fs.properties.component_list:
+        regen_state.flow_mol_phase_comp["Liq", comp].unfix()
+        regen_state.flow_mass_phase_comp["Liq", comp].unfix()
+        regen_state.mass_frac_phase_comp["Liq", comp].unfix()
+        regen_state.conc_mol_phase_comp["Liq", comp].unfix()
+        if comp != "H2O":  # Skip H2O for ionic properties
+            regen_state.conc_equiv_phase_comp["Liq", comp].unfix()
+    regen_state.flow_vol_phase["Liq"].unfix()
+    regen_state.dens_mass_phase["Liq"].unfix()
+    regen_state.visc_k_phase["Liq"].unfix()
+    regen_state.diffus_phase_comp["Liq", ix.config.target_ion].unfix()
+
+    # Set regenerant flow rate based on stoichiometry
+    regenerant_mw = ix.config.regenerant_mw_data[ix.config.regenerant]
+
+    # Calculate regenerant flow rate
+    flow_mol_regenerant = 0.001 / regenerant_mw  # molar flowrate of regenerant
+    ix.flow_mol_regenerant.set_value(flow_mol_regenerant)
+
     # ... and then initialize the ion exchange model.
     m.fs.ion_exchange.initialize()
     # With the ion exchange model initialized, we have initial guesses for the Product and Regen blocks

@@ -883,9 +883,15 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             self.target_ion_set, doc="Mass transfer for regeneration stream"
         )
         def eq_mass_transfer_regen(b, j):
+            if b.config.regenerant == "single_use":
+                return Constraint.Skip
+            # Convert mass transfer term from mol/s to mol by multiplying by breakthrough time
+            # Convert to flow rate by dividing by regeneration time
             return (
-                regen.get_material_flow_terms("Liq", j)
+                b.regeneration_stream[0].flow_mol_phase_comp["Liq", j]
                 == -b.process_flow.mass_transfer_term[0, "Liq", j]
+                * b.t_breakthru
+                / b.t_regen
             )
 
         @self.Constraint(
@@ -1237,14 +1243,16 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             doc="Mass generation from regenerant dissolution",
         )
         def eq_regenerant_dissolution(b, t, j):
-            if j in self.config.regenerant_stoich_data[self.config.regenerant]:
-                return b.regeneration_stream[t].get_material_flow_terms("Liq", j) == (
-                    b.flow_mol_regenerant
-                    * b.regenerant_stoich[j]
-                    * b.config.property_package.mw_comp[j]
+            if b.config.regenerant == "single_use":
+                return Constraint.Skip
+            if j in b.config.regenerant_stoich_data[b.config.regenerant]:
+                return (
+                    b.regeneration_stream[t].flow_mol_phase_comp["Liq", j]
+                    == b.flow_mol_regenerant
+                    * b.config.regenerant_stoich_data[b.config.regenerant][j]
                 )
-            # for components not in the regenerant, returns Constraint.Skip
-            return Constraint.Skip
+            else:
+                return Constraint.Skip
 
     def initialize_build(
         self,
