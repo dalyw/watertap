@@ -155,7 +155,7 @@ def build_flowsheet():
     m.fs.AD.liquid_outlet.temperature.fix(308.15)
 
     # ElectroNP
-    m.fs.electroNP.energy_electric_flow_mass["S_PO4"].fix(0.044 * units.kWh / units.kg)
+    m.fs.electroNP.energy_electric_flow_mass.fix(0.044 * units.kWh / units.kg)
     m.fs.electroNP.magnesium_chloride_dosage.fix(0.388)
 
     # Costing
@@ -298,7 +298,3 @@ if __name__ == "__main__":
     )
     print(stream_table_dataframe_to_string(stream_table))
     display_costing(m)
-
-    from watertap.flowsheets.plot_network import plot_network
-
-    plot_network(m, stream_table, path_to_save="electroNP_flowsheet_network.png")
