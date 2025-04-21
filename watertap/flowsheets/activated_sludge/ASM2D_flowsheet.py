@@ -72,7 +72,7 @@ def automate_rescale_variables(m):
         iscale.calculate_scaling_factors(m)
 
 
-def build_flowsheet(x_aut_reduction):
+def build_flowsheet():
     m = pyo.ConcreteModel()
 
     m.fs = FlowsheetBlock(dynamic=False)
@@ -219,9 +219,7 @@ def build_flowsheet(x_aut_reduction):
     m.fs.FeedWater.conc_mass_comp[0, "X_PAO"].fix(1e-6 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "X_PP"].fix(1e-6 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "X_PHA"].fix(1e-6 * pyo.units.g / pyo.units.m**3)
-    m.fs.FeedWater.conc_mass_comp[0, "X_AUT"].fix(
-        1e-6 * (1 - x_aut_reduction) * pyo.units.g / pyo.units.m**3
-    )
+    m.fs.FeedWater.conc_mass_comp[0, "X_AUT"].fix(1e-6 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "X_MeOH"].fix(1e-6 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "X_MeP"].fix(1e-6 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "X_TSS"].fix(180 * pyo.units.g / pyo.units.m**3)
@@ -448,7 +446,6 @@ if __name__ == "__main__":
             "R5": m.fs.R5.outlet,
             "R6": m.fs.R6.outlet,
             "R7": m.fs.R7.outlet,
-            "Treated": m.fs.Treated.inlet,
         },
         time_point=0,
     )
