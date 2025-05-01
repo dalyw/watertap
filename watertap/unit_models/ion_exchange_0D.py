@@ -24,6 +24,7 @@ from pyomo.environ import (
     Reals,
     Constraint,
     Var,
+    value,
 )
 from pyomo.common.config import ConfigBlock, ConfigValue, In
 
@@ -323,40 +324,56 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             has_pressure_change=False,
         )
 
-        prop_in = self.process_flow.properties_in[0]
-
         self.add_inlet_port(name="inlet", block=self.process_flow)
         self.add_outlet_port(name="outlet", block=self.process_flow)
 
-        tmp_dict = dict(**self.config.property_package_args)
-        tmp_dict["has_phase_equilibrium"] = False
-        tmp_dict["parameters"] = self.config.property_package
-        tmp_dict["defined_state"] = False
-
-        self.fresh_regenerant = self.config.property_package.state_block_class(
-            self.flowsheet().config.time,
-            doc="Material properties of fresh regeneration stream",
-            **tmp_dict,
+        # Add regeneration flow ControlVolume0DBlock
+        self.regen_flow = ControlVolume0DBlock(
+            dynamic=False,
+            has_holdup=False,
+            property_package=self.config.property_package,
+            property_package_args=self.config.property_package_args,
         )
 
-        self.spent_regenerant = self.config.property_package.state_block_class(
-            self.flowsheet().config.time,
-            doc="Material properties of spent regeneration stream",
-            **tmp_dict,
+        self.regen_flow.add_state_blocks(has_phase_equilibrium=False)
+        self.regen_flow.add_material_balances(
+            balance_type=self.config.material_balance_type, has_mass_transfer=True
+        )
+        self.regen_flow.add_energy_balances(
+            balance_type=self.config.energy_balance_type, has_enthalpy_transfer=False
+        )
+        self.regen_flow.add_isothermal_assumption()
+        self.regen_flow.add_momentum_balances(
+            balance_type=self.config.momentum_balance_type,
+            has_pressure_change=False,
         )
 
-        # Add ports for both streams
-        self.add_inlet_port(name="fresh_regen", block=self.fresh_regenerant)
-        self.add_outlet_port(name="spent_regen", block=self.spent_regenerant)
+        self.add_inlet_port(name="regen_inlet", block=self.regen_flow)
+        self.add_outlet_port(name="regen_outlet", block=self.regen_flow)
 
-        # NOTE: The fresh_regenerant and spent_regenerant state blocks are for internal use only.
-        # They are not intended to be connected to external units via Arcs. All regenerant logic
-        # (tank size, mass, flow, etc.) is handled internally within this unit model.
+        # Add mass transfer term for regeneration stream
+        self.mass_transfer_term = Var(
+            self.target_ion_set,
+            initialize=0,
+            units=pyunits.mol / pyunits.s,
+            doc="Mass transfer term for regeneration stream",
+        )
 
-        for j in inerts:
-            self.process_flow.mass_transfer_term[:, "Liq", j].fix(0)
-            self.fresh_regenerant[0].get_material_flow_terms("Liq", j).fix(0)
-            self.spent_regenerant[0].get_material_flow_terms("Liq", j).fix(0)
+        # Add process-to-regen ratio parameter
+        self.service_to_regen_flow_ratio = Param(
+            initialize=3.0,
+            mutable=True,
+            units=pyunits.dimensionless,
+            doc="Ratio of service flow rate to regeneration flow rate",
+        )
+
+        # Add regeneration time parameter
+        self.t_regen = Param(
+            initialize=1800,
+            mutable=True,
+            units=pyunits.s,
+            doc="Regeneration time",
+        )
 
         # ==========PARAMETERS==========
 
@@ -455,20 +472,6 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             mutable=True,
             units=pyunits.dimensionless,
             doc="Pump efficiency",
-        )
-
-        self.t_regen = Param(
-            initialize=1800,
-            mutable=True,
-            units=pyunits.s,
-            doc="Regeneration time",
-        )
-
-        self.service_to_regen_flow_ratio = Param(
-            initialize=3,
-            mutable=True,
-            units=pyunits.dimensionless,
-            doc="Ratio of service flow rate to regeneration flow rate",
         )
 
         # how effectively the resin's capacity is restored after it's been exhausted
@@ -670,7 +673,6 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
         )
 
         if self.config.isotherm == IsothermType.langmuir:
-
             self.resin_max_capacity = Var(
                 initialize=5,
                 units=pyunits.mol / pyunits.kg,
@@ -819,7 +821,7 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             vel_bed = pyunits.convert(b.vel_bed, to_units=pyunits.m / pyunits.hr)
             return (
                 b.p_drop_A + b.p_drop_B * vel_bed + b.p_drop_C * vel_bed**2
-            ) * b.bed_depth  # for 20C;
+            ) * b.bed_depth  # for  20C;
 
         @self.Expression(doc="Total bed volume")
         def bed_vol(b):
@@ -836,45 +838,6 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
         @self.Expression(doc="Cycle time")
         def t_cycle(b):
             return b.t_breakthru + b.t_waste
-
-        @self.Expression(doc="Regenerant flow rate")
-        def regen_flow_rate(b):
-            return prop_in.flow_vol_phase["Liq"] / b.service_to_regen_flow_ratio
-
-        @self.Expression(doc="Regen tank volume")
-        def regen_tank_vol(b):
-            return b.regen_flow_rate * b.t_regen
-
-        @self.Expression(doc="Regen pump power")
-        def regen_pump_power(b):
-            return pyunits.convert(
-                (b.pressure_drop * b.regen_flow_rate) / b.pump_efficiency,
-                to_units=pyunits.kilowatts,
-            ) * (b.t_regen / b.t_cycle)
-
-        if self.config.regenerant == RegenerantChem.single_use:
-            self.t_regen.set_value(0)
-            self.service_to_regen_flow_ratio.set_value(0)
-
-        if self.config.regenerant != RegenerantChem.single_use:
-            # If resin is not single use, add regeneration
-
-            @self.Expression(doc="Mass of target ions to be removed")
-            def target_ion_mass(b):
-                resin_capacity = b.resin_max_capacity  # mol/kg
-                resin_mass = b.bed_vol_tot * b.resin_bulk_dens  # kg
-                total_ion_capacity = resin_capacity * resin_mass  # mol
-                return total_ion_capacity * b.regen_efficiency  # mol
-
-            @self.Expression(doc="Required regenerant mass")
-            def required_regen_mass(b):
-                return (
-                    b.target_ion_mass * b.config.regenerant_mw_data[b.config.regenerant]
-                )
-
-            @self.Expression(doc="Regenerant concentration")
-            def regen_concentration(b):
-                return b.required_regen_mass / b.regen_tank_vol
 
         @self.Expression(doc="Backwashing flow rate")
         def bw_flow(b):
@@ -910,40 +873,6 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                 to_units=pyunits.kilowatts,
             ) * (b.t_rinse / b.t_cycle)
 
-        @self.Constraint(
-            self.target_ion_set, doc="Mass transfer for regeneration stream"
-        )
-        def eq_mass_transfer_regen(b, j):
-            if b.config.regenerant == "single_use":
-                return Constraint.Skip
-            # Calculate mass transfer based on regenerant flow rate and tank volume
-            regen_flow = b.regen_flow_rate
-            tank_vol = b.regen_tank_vol
-            # Convert mass transfer term from mol/s to mol by multiplying by breakthrough time
-            # Then convert to concentration by dividing by tank volume
-            return b.spent_regenerant[0].flow_mol_phase_comp[
-                "Liq", j
-            ] == b.fresh_regenerant[0].flow_mol_phase_comp["Liq", j] - (
-                b.process_flow.mass_transfer_term[0, "Liq", j]
-                * b.t_breakthru
-                * regen_flow
-                / tank_vol
-            )
-
-        @self.Constraint(
-            doc="Isothermal assumption for regen stream",
-        )
-        def eq_isothermal_regen_streams(b):
-            return (
-                b.fresh_regenerant[0].temperature == b.spent_regenerant[0].temperature
-            )
-
-        @self.Constraint(
-            doc="Isobaric assumption for regen streams",
-        )
-        def eq_isobaric_regen_streams(b):
-            return b.fresh_regenerant[0].pressure == b.spent_regenerant[0].pressure
-
         @self.Expression(doc="Bed expansion from backwashing")
         def bed_expansion_h(b):
             return b.bed_expansion_frac * b.bed_depth
@@ -951,9 +880,21 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
         @self.Expression(doc="Main pump power")
         def main_pump_power(b):
             return pyunits.convert(
-                (b.pressure_drop * prop_in.flow_vol_phase["Liq"]) / b.pump_efficiency,
+                (
+                    b.pressure_drop
+                    * b.process_flow.properties_in[0].flow_vol_phase["Liq"]
+                )
+                / b.pump_efficiency,
                 to_units=pyunits.kilowatts,
             ) * (b.t_breakthru / b.t_cycle)
+
+        @self.Expression(doc="Regen pump power")
+        def regen_pump_power(b):
+            return pyunits.convert(
+                (b.pressure_drop * b.regen_flow.properties_in[0].flow_vol_phase["Liq"])
+                / b.pump_efficiency,
+                to_units=pyunits.kilowatts,
+            ) * (b.t_regen / b.t_cycle)
 
         @self.Expression(doc="Volume per column")
         def col_vol_per(b):
@@ -1008,19 +949,55 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                     * b.rate_coeff[j]
                 )
 
+            @self.Expression(doc="Service time")
+            def t_service(b):
+                return b.t_cycle - b.t_regen
+
         # ==========CONSTRAINTS==========
+
+        @self.Constraint(
+            doc="Isothermal assumption for regen stream",
+        )
+        def eq_isothermal_regen_streams(b):
+            return (
+                b.regen_flow.properties_in[0].temperature
+                == b.regen_flow.properties_in[0].temperature
+            )
+
+        @self.Constraint(
+            doc="Isobaric assumption for regen streams",
+        )
+        def eq_isobaric_regen_streams(b):
+            return (
+                b.regen_flow.properties_in[0].pressure
+                == b.regen_flow.properties_in[0].pressure
+            )
+
+        @self.Constraint(doc="Process to regeneration flow ratio")
+        def eq_process_to_regen_ratio(b):
+            return (
+                b.process_flow.properties_in[0].flow_vol_phase["Liq"]
+                <= (1 + 1e-6)
+                * b.service_to_regen_flow_ratio
+                * b.regen_flow.properties_in[0].flow_vol_phase["Liq"]
+            )  # small value for feasibility, avoiding FBBT error
 
         # =========== DIMENSIONLESS ===========
 
         @self.Constraint(doc="Reynolds number")
         def eq_Re(b):  # Eq. 3.358, Inglezakis + Poulopoulos
-            return b.N_Re == (b.vel_bed * b.resin_diam) / prop_in.visc_k_phase["Liq"]
+            return (
+                b.N_Re
+                == (b.vel_bed * b.resin_diam)
+                / b.process_flow.properties_in[0].visc_k_phase["Liq"]
+            )
 
         @self.Constraint(self.target_ion_set, doc="Schmidt number")
         def eq_Sc(b, j):  # Eq. 3.359, Inglezakis + Poulopoulos
             return (
                 b.N_Sc[j]
-                == prop_in.visc_k_phase["Liq"] / prop_in.diffus_phase_comp["Liq", j]
+                == b.process_flow.properties_in[0].visc_k_phase["Liq"]
+                / b.process_flow.properties_in[0].diffus_phase_comp["Liq", j]
             )
 
         @self.Constraint(self.target_ion_set, doc="Sherwood number")
@@ -1054,14 +1031,15 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
         @self.Constraint(doc="Service flow rate")
         def eq_service_flow_rate(b):
             return b.service_flow_rate * b.bed_vol_tot == pyunits.convert(
-                prop_in.flow_vol_phase["Liq"],
+                b.process_flow.properties_in[0].flow_vol_phase["Liq"],
                 to_units=pyunits.m**3 / pyunits.hr,
             )
 
         @self.Constraint(doc="Flow through bed constraint")
         def eq_bed_flow(b):
             return (
-                b.bed_depth * prop_in.flow_vol_phase["Liq"] == b.bed_vol_tot * b.vel_bed
+                b.bed_depth * b.process_flow.properties_in[0].flow_vol_phase["Liq"]
+                == b.bed_vol_tot * b.vel_bed
             )
 
         @self.Constraint(doc="Column height")
@@ -1099,7 +1077,7 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             def eq_mass_transfer_target_lang(b, j):
                 return (
                     b.mass_removed[j]
-                    == b.fresh_regenerant[0].flow_mol_phase_comp["Liq", j]
+                    == b.regen_flow.properties_in[0].flow_mol_phase_comp["Liq", j]
                     - b.process_flow.mass_transfer_term[0, "Liq", j] * b.t_breakthru
                 )
 
@@ -1107,13 +1085,16 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             def eq_fluid_mass_transfer_coeff(b, j):
                 return (
                     b.fluid_mass_transfer_coeff[j] * b.resin_diam
-                    == prop_in.diffus_phase_comp["Liq", j] * b.N_Sh[j]
+                    == b.process_flow.properties_in[0].diffus_phase_comp["Liq", j]
+                    * b.N_Sh[j]
                 )
 
             @self.Constraint(doc="Partition ratio")
             def eq_partition_ratio(b):
                 return b.partition_ratio * pyunits.convert(
-                    prop_in.conc_equiv_phase_comp["Liq", target_ion],
+                    b.process_flow.properties_in[0].conc_equiv_phase_comp[
+                        "Liq", target_ion
+                    ],
                     to_units=pyunits.mol / pyunits.L,
                 ) == (b.resin_eq_capacity * b.resin_bulk_dens)
 
@@ -1121,8 +1102,9 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                 self.target_ion_set, doc="Removed total mass of ion in equivalents"
             )
             def eq_mass_removed(b, j):
-                charge = abs(prop_in.charge_comp[j].value)
-                return b.mass_removed[j] * charge == pyunits.convert(
+                return b.mass_removed[j] * abs(
+                    b.process_flow.properties_in[0].charge_comp[j].value
+                ) == pyunits.convert(
                     b.resin_eq_capacity * b.resin_bulk_dens * b.bed_vol_tot,
                     to_units=pyunits.mol,
                 )
@@ -1174,7 +1156,10 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
 
             @self.Expression(self.target_ion_set, doc="Breakthrough concentration")
             def c_breakthru(b, j):
-                return b.c_norm[j] * prop_in.conc_mass_phase_comp["Liq", j]
+                return (
+                    b.c_norm[j]
+                    * b.process_flow.properties_in[0].conc_mass_phase_comp["Liq", j]
+                )
 
             @self.Constraint(doc="Bed volumes at breakthrough")
             def eq_bv(b):
@@ -1239,9 +1224,91 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                 doc="CV mass transfer term",
             )
             def eq_mass_transfer_target_fr(b, j):
-                return (1 - b.c_norm_avg[j]) * prop_in.get_material_flow_terms(
+                return (1 - b.c_norm_avg[j]) * b.process_flow.properties_in[
+                    0
+                ].get_material_flow_terms(
                     "Liq", j
-                ) == -b.process_flow.mass_transfer_term[0, "Liq", j]
+                ) == -b.process_flow.mass_transfer_term[
+                    0, "Liq", j
+                ]
+
+        # =========== REGENERATION ===========
+        @self.Expression(doc="Regen tank volume")
+        def regen_tank_vol(b):
+            return b.regen_flow.properties_in[0].flow_vol_phase["Liq"] * b.t_regen
+
+        @self.Expression(doc="Moles of target ions to be removed")
+        def target_ion_moles(b):
+            inlet_conc = b.process_flow.properties_in[0].conc_mol_phase_comp[
+                "Liq", b.config.target_ion
+            ]  # mol/m3
+            outlet_conc = b.process_flow.properties_out[0].conc_mol_phase_comp[
+                "Liq", b.config.target_ion
+            ]  # mol/m3
+            flow_vol = b.process_flow.properties_in[0].flow_vol_phase["Liq"]  # m3/s
+            return (inlet_conc - outlet_conc) * flow_vol * b.t_service  # mol
+
+        @self.Expression(doc="Fresh regenerant concentration")
+        def fresh_regen_concentration(b):
+            target_ion_mw = b.config.property_package.mw_comp[
+                b.config.target_ion
+            ].value  # kg/mol
+            target_ion_mass = b.target_ion_moles * target_ion_mw  # kg
+            regenerant_mass = (
+                target_ion_mass
+                * b.config.regenerant_mw_data[b.config.regenerant]
+                / target_ion_mw
+            )  # kg
+            return regenerant_mass / b.regen_tank_vol  # kg/m3
+
+        @self.Expression(
+            self.config.property_package.component_list,
+            doc="Spent regenerant concentration",
+        )
+        def spent_regen_concentration(b, comp):
+            if comp == b.config.target_ion:
+                return (
+                    b.target_ion_moles
+                    * b.config.property_package.mw_comp[comp].value
+                    / b.regen_tank_vol
+                )  # kg/m3
+            elif comp in b.config.regenerant_stoich_data[b.config.regenerant]:
+                initial_moles = (
+                    b.fresh_regen_concentration
+                    * b.regen_tank_vol
+                    / b.config.property_package.mw_comp[comp].value
+                )  # mol
+                if (
+                    b.config.property_package.charge_comp[comp].value
+                    * b.config.property_package.charge_comp[b.config.target_ion].value
+                    > 0
+                ):
+                    used_moles = (
+                        b.target_ion_moles
+                        * b.config.regenerant_stoich_data[b.config.regenerant][comp]
+                    )  # mol
+                    remaining_moles = initial_moles - used_moles  # mol
+                    return (
+                        remaining_moles
+                        * b.config.property_package.mw_comp[comp].value
+                        / b.regen_tank_vol
+                    )  # kg/m3
+                else:
+                    return b.fresh_regen_concentration
+            elif comp == "H2O":
+                return 997.0  # kg/m3
+            else:
+                return 1e-6  # kg/m3
+
+        @self.Constraint(
+            self.target_ion_set, doc="Mass transfer for regeneration stream"
+        )
+        def eq_mass_transfer_regen(b, j):
+            return (
+                b.regen_flow.properties_in[0].get_material_flow_terms("Liq", j)
+                - b.regen_flow.properties_out[0].get_material_flow_terms("Liq", j)
+                == b.mass_transfer_term[j]
+            )
 
         self.regenerant_mw = Param(
             initialize=self.config.regenerant_mw_data[self.config.regenerant],
@@ -1286,16 +1353,20 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                 return Constraint.Skip
             if j in b.config.regenerant_stoich_data[b.config.regenerant]:
                 return (
-                    b.fresh_regenerant[t].flow_mol_phase_comp["Liq", j]
+                    b.regen_flow.properties_in[t].flow_mol_phase_comp["Liq", j]
                     == b.flow_mol_regenerant
                     * b.config.regenerant_stoich_data[b.config.regenerant][j]
                 )
             else:
                 return Constraint.Skip
 
-        if self.config.regenerant == RegenerantChem.single_use:
-            self.t_regen.set_value(0)
-            self.service_to_regen_flow_ratio.set_value(0)
+        @self.Constraint(self.target_ion_set, doc="Mass transfer for process stream")
+        def eq_mass_transfer_process(b, j):
+            return (
+                b.process_flow.properties_out[0].get_material_flow_terms("Liq", j)
+                - b.process_flow.properties_in[0].get_material_flow_terms("Liq", j)
+                == -b.mass_transfer_term[j]
+            )
 
     def initialize_build(
         self,
@@ -1396,147 +1467,59 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             else:
                 self.process_flow.mass_transfer_term[0, "Liq", comp].set_value(1e-6)
 
-        # Regen stream initialization
-        regen_state = self.fresh_regenerant[0]
-
-        # Unfix all variables in regen state
-        for comp in self.config.property_package.component_list:
-            regen_state.flow_mol_phase_comp["Liq", comp].unfix()
-            regen_state.flow_mass_phase_comp["Liq", comp].unfix()
-            regen_state.mass_frac_phase_comp["Liq", comp].unfix()
-            regen_state.conc_mol_phase_comp["Liq", comp].unfix()
-            if comp != "H2O":  # Skip H2O for ionic properties
-                regen_state.conc_equiv_phase_comp["Liq", comp].unfix()
-        regen_state.flow_vol_phase["Liq"].unfix()
-        regen_state.dens_mass_phase["Liq"].unfix()
-        regen_state.visc_k_phase["Liq"].unfix()
-        regen_state.diffus_phase_comp["Liq", self.config.target_ion].unfix()
+        # Debug print statements
+        service_flow = self.process_flow.properties_in[0].flow_vol_phase["Liq"].value
+        print(f"\nDEBUG - Initial service flow: {service_flow} m3/s")
+        print(
+            f"DEBUG - Service to regen ratio: {self.service_to_regen_flow_ratio.value}"
+        )
+        print(
+            f"DEBUG - Target regen flow: {service_flow / self.service_to_regen_flow_ratio.value} m3/s"
+        )
+        print(
+            f"DEBUG - Current regen flow: {self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value} m3/s"
+        )
 
         # Calculate regenerant flow rate based on service to regeneration flow ratio
-        service_flow = self.process_flow.properties_in[0].flow_vol_phase["Liq"].value
-        regen_flow = service_flow / self.service_to_regen_flow_ratio.value
-        print(f"Service flow: {service_flow} m3/s, Regen flow: {regen_flow} m3/s")
+        self.regen_flow.properties_in[0].flow_vol_phase["Liq"].set_value(
+            service_flow / self.service_to_regen_flow_ratio.value
+        )
 
-        # Calculate mass of target ion to be removed
-        target_ion = self.config.target_ion
-        resin_capacity = self.resin_max_capacity.value  # mol/kg
-        resin_mass = self.bed_vol_tot.value * self.resin_bulk_dens.value  # kg
-        total_ion_capacity = resin_capacity * resin_mass  # mol
-        ions_removed = total_ion_capacity * self.regen_efficiency.value  # mol
-        regenerant_mass = (
-            ions_removed * self.config.regenerant_mw_data[self.config.regenerant]
-        )  # kg
-        print(f"Resin capacity: {resin_capacity} mol/kg")
-        print(f"Resin mass: {resin_mass} kg")
-        print(f"Total ion capacity: {total_ion_capacity} mol")
-        print(f"Ions removed: {ions_removed} mol")
-        print(f"Regenerant mass: {regenerant_mass} kg")
+        print(
+            f"DEBUG - New regen flow: {self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value} m3/s"
+        )
+        print(
+            f"DEBUG - Ratio after setting: {service_flow / self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value}\n"
+        )
 
-        # Calculate regenerant tank volume and concentration
-        regen_tank_vol = regen_flow * self.t_regen.value  # m3
-        print(f"Regen tank volume: {regen_tank_vol} m3")
-
-        # Set fresh regenerant concentrations based on dosed mass and tank volume
+        # Let the model's expressions calculate concentrations
         for comp in self.config.property_package.component_list:
             if comp == "H2O":
-                regen_state.flow_mol_phase_comp["Liq", comp].set_value(
-                    55.5
-                )  # mol/L for water
-            elif comp in self.config.regenerant_stoich_data[self.config.regenerant]:
-                # Calculate concentration based on stoichiometry and tank volume
-                comp_mass = (
-                    regenerant_mass
-                    * self.config.regenerant_stoich_data[self.config.regenerant][comp]
-                )
-                conc = comp_mass / regen_tank_vol  # kg/m3
-                print(f"Component {comp}: mass={comp_mass} kg, conc={conc} kg/m3")
-                regen_state.conc_mass_phase_comp["Liq", comp].set_value(conc)
-            else:
-                regen_state.conc_mass_phase_comp["Liq", comp].set_value(1e-6)
-
-        # Initialize spent regenerant stream based on mass balances
-        spent_regen_state = self.spent_regenerant[0]
-
-        # Calculate spent regenerant concentrations
-        for comp in self.config.property_package.component_list:
-            if comp == target_ion:
-                # Target ion concentration in spent regenerant
-                # Convert from mol to mass
-                conc_mol = ions_removed / regen_flow  # mol/m3
-                conc_mass = (
-                    conc_mol * self.config.property_package.mw_comp[comp].value
+                self.regen_flow.properties_in[0].conc_mass_phase_comp[
+                    "Liq", comp
+                ].set_value(
+                    997.0
                 )  # kg/m3
-                spent_regen_state.conc_mass_phase_comp["Liq", comp].set_value(conc_mass)
             elif comp in self.config.regenerant_stoich_data[self.config.regenerant]:
-                print(
-                    f"Debug - Component {comp}: charge={self.config.property_package.charge_comp[comp].value}, target charge={self.config.property_package.charge_comp[target_ion].value}"
-                )
-                if (
-                    self.config.property_package.charge_comp[comp].value
-                    * self.config.property_package.charge_comp[target_ion].value
-                    > 0
-                ):
-                    # Same sign: decrease by used amount
-                    initial_mass = (
-                        regen_state.conc_mass_phase_comp["Liq", comp].value * regen_flow
-                    )
-                    used_mass = (
-                        ions_removed
-                        * self.config.regenerant_stoich_data[self.config.regenerant][
-                            comp
-                        ]
-                        * self.config.property_package.mw_comp[comp].value
-                    )
-                    spent_conc = max(0, (initial_mass - used_mass) / regen_flow)
-                    print(
-                        f"  initial_mass={initial_mass}, used_mass={used_mass}, spent_conc={spent_conc}"
-                    )
-                    spent_regen_state.conc_mass_phase_comp["Liq", comp].set_value(
-                        spent_conc
-                    )
-                else:
-                    # Opposite sign: NO CHANGE
-                    print(
-                        f"  Counterion (no change): spent_conc={regen_state.conc_mass_phase_comp['Liq', comp].value}"
-                    )
-                    spent_regen_state.conc_mass_phase_comp["Liq", comp].set_value(
-                        regen_state.conc_mass_phase_comp["Liq", comp].value
-                    )
+                self.regen_flow.properties_in[0].conc_mass_phase_comp[
+                    "Liq", comp
+                ].set_value(value(self.fresh_regen_concentration))
             else:
-                # For other components, keep same concentration as fresh regenerant
-                spent_regen_state.conc_mass_phase_comp["Liq", comp].set_value(
-                    regen_state.conc_mass_phase_comp["Liq", comp].value
-                )
-
-        # Ensure mass balance through all ports
-        # Process flow outlet should have reduced target ion concentration
-        prop_out = self.process_flow.properties_out[0]
-        for comp in self.config.property_package.component_list:
-            if comp == target_ion:
-                # Calculate mass removed
-                mass_removed = (
-                    ions_removed * self.config.property_package.mw_comp[comp].value
-                )
-                # Update outlet concentration
-                initial_mass = (
-                    self.process_flow.properties_in[0]
-                    .conc_mass_phase_comp["Liq", comp]
-                    .value
-                    * service_flow
-                )
-                remaining_mass = initial_mass - mass_removed
-                new_conc = remaining_mass / service_flow
-                prop_out.conc_mass_phase_comp["Liq", comp].set_value(new_conc)
-            else:
-                # Keep other components unchanged
-                prop_out.conc_mass_phase_comp["Liq", comp].set_value(
-                    self.process_flow.properties_in[0]
-                    .conc_mass_phase_comp["Liq", comp]
-                    .value
-                )
+                self.regen_flow.properties_in[0].conc_mass_phase_comp[
+                    "Liq", comp
+                ].set_value(1e-6)
 
         # Initialize spent regenerant stream
-        self.spent_regenerant.initialize(
+        spent_regen_state = self.regen_flow.properties_out[0]
+
+        # Use model expressions for spent regenerant concentrations
+        for comp in self.config.property_package.component_list:
+            spent_regen_state.conc_mass_phase_comp["Liq", comp].set_value(
+                value(self.spent_regen_concentration[comp])
+            )
+
+        # Initialize the regenerant flow
+        self.regen_flow.initialize(
             outlvl=outlvl,
             optarg=optarg,
             solver=solver,
@@ -1716,14 +1699,39 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                 if iscale.get_scaling_factor(c) is None:
                     iscale.constraint_scaling_transform(c, 1e2)
 
+        # Add scaling for flow variables
+        if (
+            iscale.get_scaling_factor(
+                self.process_flow.properties_in[0].flow_vol_phase["Liq"]
+            )
+            is None
+        ):
+            iscale.set_scaling_factor(
+                self.process_flow.properties_in[0].flow_vol_phase["Liq"], 1e2
+            )
+
+        if (
+            iscale.get_scaling_factor(
+                self.regen_flow.properties_in[0].flow_vol_phase["Liq"]
+            )
+            is None
+        ):
+            iscale.set_scaling_factor(
+                self.regen_flow.properties_in[0].flow_vol_phase["Liq"], 1e2
+            )
+
+        # Scale the ratio constraint
+        if iscale.get_scaling_factor(self.eq_process_to_regen_ratio) is None:
+            iscale.constraint_scaling_transform(self.eq_process_to_regen_ratio, 1e-2)
+
     def _get_stream_table_contents(self, time_point=0):
 
         return create_stream_table_dataframe(
             {
                 "Feed Inlet": self.inlet,
                 "Liquid Outlet": self.outlet,
-                "Fresh Regen Outlet": self.fresh_regenerant,
-                "Spent Regen Outlet": self.spent_regenerant,
+                "Fresh Regen Outlet": self.regen_flow.properties_in,
+                "Spent Regen Outlet": self.regen_flow.properties_out,
             },
             time_point=time_point,
         )
