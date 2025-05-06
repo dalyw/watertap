@@ -168,11 +168,6 @@ def build_ion_exhange_cost_param_block(blk):
         units=pyo.units.USD_2020 * pyo.units.gal**-1,
         doc="Hazardous liquid disposal cost - EPA",
     )
-    blk.regen_recycle = pyo.Var(
-        initialize=1,
-        units=pyo.units.dimensionless,
-        doc="Number of cycles the regenerant can be reused before disposal",
-    )
 
 
 @register_costing_parameter_block(
@@ -250,12 +245,6 @@ def cost_ion_exchange(blk):
         units=blk.costing_package.base_currency / blk.costing_package.base_period,
         doc="Operating cost for hazardous waste disposal",
     )
-    blk.flow_mass_regen_soln = pyo.Var(
-        initialize=1,
-        domain=pyo.NonNegativeReals,
-        units=pyo.units.kg / pyo.units.year,
-        doc="Regeneration solution flow",
-    )
     blk.total_pumping_power = pyo.Var(
         initialize=1,
         domain=pyo.NonNegativeReals,
@@ -287,7 +276,12 @@ def cost_ion_exchange(blk):
     )
     if blk.unit_model.config.regenerant == "single_use":
         blk.capital_cost_regen_tank.fix(0)
-        blk.flow_mass_regen_soln.fix(0)
+        blk.annual_regen_mass_flow = pyo.Var(
+            initialize=1,
+            domain=pyo.NonNegativeReals,
+            units=pyo.units.kg / pyo.units.year,
+            doc="Regeneration solution flow",
+        )
         blk.flow_vol_resin = pyo.Var(
             initialize=1e5,
             bounds=(0, None),
@@ -364,6 +358,12 @@ def cost_ion_exchange(blk):
             to_units=blk.costing_package.base_currency,
         )
     )
+
+    blk.annual_regen_mass_flow = pyo.Expression(
+        expr=blk.unit_model.annual_regen_mass_flow,
+        doc="Annual regenerant flow [kg/year]",
+    )
+
     if blk.unit_model.config.hazardous_waste:
 
         if blk.unit_model.config.regenerant == "single_use":
@@ -391,7 +391,8 @@ def cost_ion_exchange(blk):
                     )
                     * ion_exchange_params.annual_resin_replacement_factor
                     + pyo.units.convert(
-                        blk.flow_mass_regen_soln / blk.regen_soln_dens,
+                        blk.unit_model.annual_regen_mass_flow
+                        / blk.unit_model.regen_soln_dens,
                         to_units=pyo.units.gal / pyo.units.year,
                     )
                     * ion_exchange_params.hazardous_regen_disposal
@@ -436,20 +437,20 @@ def cost_ion_exchange(blk):
             + blk.operating_cost_hazardous
         )
 
-        blk.flow_mass_regen_soln_constraint = pyo.Constraint(
-            expr=blk.flow_mass_regen_soln
+        blk.annual_regen_mass_flow_constraint = pyo.Constraint(
+            expr=blk.annual_regen_mass_flow
             == pyo.units.convert(
                 (
                     (blk.regen_dose * blk.unit_model.bed_vol * tot_num_col)
                     / (blk.unit_model.t_cycle)
                 )
-                / ion_exchange_params.regen_recycle,
+                / blk.unit_model.regen_recycle,
                 to_units=pyo.units.kg / pyo.units.year,
             )
         )
 
         blk.costing_package.cost_flow(
-            blk.flow_mass_regen_soln, blk.unit_model.config.regenerant
+            blk.annual_regen_mass_flow, blk.unit_model.config.regenerant
         )
 
     power_expr = (
@@ -465,3 +466,18 @@ def cost_ion_exchange(blk):
     )
 
     blk.costing_package.cost_flow(blk.total_pumping_power, "electricity")
+    blk.costing_package.cost_flow(
+        blk.unit_model.flow_mass_regenerant, blk.unit_model.config.regenerant
+    )
+
+    # Add regenerant chemical cost
+    blk.costing_package.cost_flow(
+        blk.unit_model.flow_mass_regenerant,
+        blk.unit_model.config.regenerant,
+    )
+
+    # Add regeneration solution flow cost
+    blk.costing_package.cost_flow(
+        blk.unit_model.annual_regen_mass_flow,
+        blk.unit_model.config.regenerant,
+    )
