@@ -280,11 +280,49 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
         ),
     )
 
+    CONFIG.declare(
+        "regenerant_calculation_basis",
+        ConfigValue(
+            default="mass",
+            domain=In(["mass", "molar"]),
+            description="Basis for regenerant concentration calculations",
+            doc="""Specifies whether regenerant calculations use mass (kg/m³) or molar (mol/m³) basis.
+    **default** = "mass"
+    **Valid values:** {
+    **"mass"** - use mass-based concentrations (kg/m³),
+    **"molar"** - use molar-based concentrations (mol/m³)}""",
+        ),
+    )
+
     def build(self):
         super().build()
 
         comps = self.config.property_package.component_list
         target_ion = self.config.target_ion
+
+        # Helper functions for mass/moles conversions
+        def _convert_to_mass_basis(concentration_molar, component):
+            """Convert molar concentration to mass concentration"""
+            mw = self.config.property_package.mw_comp[component].value
+            return concentration_molar * mw
+
+        def _convert_to_molar_basis(concentration_mass, component):
+            """Convert mass concentration to molar concentration"""
+            mw = self.config.property_package.mw_comp[component].value
+            return concentration_mass / mw
+
+        def _get_regenerant_mw_in_kg_per_mol():
+            """Get regenerant molecular weight in kg/mol with proper unit conversion"""
+            return pyunits.convert(
+                self.config.regenerant_mw_data[self.config.regenerant]
+                * pyunits.g
+                / pyunits.mol,
+                to_units=pyunits.kg / pyunits.mol,
+            )
+
+        self._convert_to_mass_basis = _convert_to_mass_basis
+        self._convert_to_molar_basis = _convert_to_molar_basis
+        self._get_regenerant_mw_in_kg_per_mol = _get_regenerant_mw_in_kg_per_mol
 
         self.target_ion_set = Set(
             initialize=[target_ion]
@@ -957,23 +995,26 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
 
         # ==========CONSTRAINTS==========
 
-        @self.Constraint(
-            doc="Isothermal assumption for regen stream",
-        )
-        def eq_isothermal_regen_streams(b):
-            return (
-                b.regen_flow.properties_in[0].temperature
-                == b.regen_flow.properties_in[0].temperature
-            )
+        # @self.Constraint(
+        #     doc="Isothermal assumption for regen stream",
+        # )
+        # def eq_isothermal_regen_streams(b):
+        #     return (
+        #         b.regen_flow.properties_in[0].temperature
+        #         == b.regen_flow.properties_in[0].temperature
+        #     )
 
-        @self.Constraint(
-            doc="Isobaric assumption for regen streams",
-        )
-        def eq_isobaric_regen_streams(b):
-            return (
-                b.regen_flow.properties_in[0].pressure
-                == b.regen_flow.properties_in[0].pressure
-            )
+        # @self.Constraint(
+        #     doc="Isobaric assumption for regen streams",
+        # )
+        # def eq_isobaric_regen_streams(b):
+        #     return (
+        #         b.regen_flow.properties_in[0].pressure
+        #         == b.regen_flow.properties_in[0].pressure
+        #     )
+
+        # Isothermal and isobaric assumptions are handled by the ControlVolume0DBlock's
+        # built-in isothermal_assumption_eq and pressure_balance constraints? TODO check
 
         @self.Constraint(doc="Process to regeneration flow ratio")
         def eq_process_to_regen_ratio(b):
@@ -1079,8 +1120,7 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             def eq_mass_transfer_target_lang(b, j):
                 return (
                     b.mass_removed[j]
-                    == b.regen_flow.properties_in[0].flow_mol_phase_comp["Liq", j]
-                    - b.process_flow.mass_transfer_term[0, "Liq", j] * b.t_breakthru
+                    == -b.process_flow.mass_transfer_term[0, "Liq", j] * b.t_breakthru
                 )
 
             @self.Constraint(self.target_ion_set, doc="Fluid mass transfer coefficient")
@@ -1256,12 +1296,16 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                 b.config.target_ion
             ].value  # kg/mol
             target_ion_mass = b.target_ion_moles * target_ion_mw  # kg
+            regenerant_mw_kg_mol = b._get_regenerant_mw_in_kg_per_mol()
             regenerant_mass = (
-                target_ion_mass
-                * b.config.regenerant_mw_data[b.config.regenerant]
-                / target_ion_mw
+                target_ion_mass * regenerant_mw_kg_mol / target_ion_mw
             )  # kg
-            return regenerant_mass / b.regen_tank_vol  # kg/m3
+
+            if b.config.regenerant_calculation_basis == "mass":
+                return regenerant_mass / b.regen_tank_vol  # kg/m³
+            else:  # molar basis
+                regenerant_moles = regenerant_mass / regenerant_mw_kg_mol  # mol
+                return regenerant_moles / b.regen_tank_vol  # mol/m³
 
         @self.Expression(
             self.config.property_package.component_list,
@@ -1269,17 +1313,30 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
         )
         def spent_regen_concentration(b, comp):
             if comp == b.config.target_ion:
-                return (
-                    b.target_ion_moles
-                    * b.config.property_package.mw_comp[comp].value
-                    / b.regen_tank_vol
-                )  # kg/m3
+                if b.config.regenerant_calculation_basis == "mass":
+                    return (
+                        b.target_ion_moles
+                        * b.config.property_package.mw_comp[comp].value
+                        / b.regen_tank_vol
+                    )  # kg/m³
+                else:  # molar basis
+                    return b.target_ion_moles / b.regen_tank_vol  # mol/m³
+
             elif comp in b.config.regenerant_stoich_data[b.config.regenerant]:
+                if b.config.regenerant_calculation_basis == "mass":
+                    initial_moles_per_vol = b._convert_to_molar_basis(
+                        b.fresh_regen_concentration, comp
+                    )
+                else:
+                    initial_moles_per_vol = (
+                        b.fresh_regen_concentration
+                    )  # Already in mol/m³
+
                 initial_moles = (
-                    b.fresh_regen_concentration
-                    * b.regen_tank_vol
-                    / b.config.property_package.mw_comp[comp].value
-                )  # mol
+                    initial_moles_per_vol * b.regen_tank_vol
+                )  # Convert to total moles
+
+                # Remaining moles after reaction
                 if (
                     b.config.property_package.charge_comp[comp].value
                     * b.config.property_package.charge_comp[b.config.target_ion].value
@@ -1288,19 +1345,31 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                     used_moles = (
                         b.target_ion_moles
                         * b.config.regenerant_stoich_data[b.config.regenerant][comp]
-                    )  # mol
-                    remaining_moles = initial_moles - used_moles  # mol
-                    return (
-                        remaining_moles
-                        * b.config.property_package.mw_comp[comp].value
-                        / b.regen_tank_vol
-                    )  # kg/m3
+                    )
+                    remaining_moles = initial_moles - used_moles
                 else:
-                    return b.fresh_regen_concentration
+                    remaining_moles = initial_moles
+
+                if b.config.regenerant_calculation_basis == "mass":
+                    return b._convert_to_mass_basis(
+                        remaining_moles / b.regen_tank_vol, comp
+                    )  # kg/m³
+                else:
+                    return remaining_moles / b.regen_tank_vol  # mol/m³
+
             elif comp == "H2O":
-                return 997.0  # kg/m3
+                if b.config.regenerant_calculation_basis == "mass":
+                    return 997.0  # kg/m³
+                else:
+                    return (
+                        997.0 / 18e-3
+                    )  # mol/m³ (997 kg/m³ ÷ 18e-3 kg/mol) TODO check source
             else:
-                return 1e-6  # kg/m3
+                if b.config.regenerant_calculation_basis == "mass":
+                    return 1e-6  # kg/m³
+                else:
+                    mw = b.config.property_package.mw_comp[comp].value
+                    return 1e-6 / mw  # mol/m³
 
         @self.Constraint(
             self.target_ion_set, doc="Mass transfer for regeneration stream"
@@ -1351,16 +1420,20 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             doc="Mass generation from regenerant dissolution",
         )
         def eq_regenerant_dissolution(b, t, j):
-            if b.config.regenerant == "single_use":
-                return Constraint.Skip
-            if j in b.config.regenerant_stoich_data[b.config.regenerant]:
-                return (
-                    b.regen_flow.properties_in[t].flow_mol_phase_comp["Liq", j]
-                    == b.flow_mol_regenerant
-                    * b.config.regenerant_stoich_data[b.config.regenerant][j]
-                )
-            else:
-                return Constraint.Skip
+            # if b.config.regenerant == "single_use":
+            #     return Constraint.Skip
+            # if j in b.config.regenerant_stoich_data[b.config.regenerant]:
+            #     return (
+            #         b.regen_flow.properties_in[t].flow_mol_phase_comp["Liq", j]
+            #         == b.flow_mol_regenerant
+            #         * b.config.regenerant_stoich_data[b.config.regenerant][j]
+            #     )
+            # else:
+            #     return Constraint.Skip
+
+            # Skip to avoid over-constraining the system
+            # The regenerant flows will be set directly in initialization
+            return Constraint.Skip
 
         @self.Constraint(self.target_ion_set, doc="Mass transfer for process stream")
         def eq_mass_transfer_process(b, j):
@@ -1469,45 +1542,59 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             else:
                 self.process_flow.mass_transfer_term[0, "Liq", comp].set_value(1e-6)
 
-        # Debug print statements
-        service_flow = self.process_flow.properties_in[0].flow_vol_phase["Liq"].value
-        print(f"\nInitial service flow {service_flow} m3/s")
-        print(f"Service to regen ratio {self.service_to_regen_flow_ratio.value}")
-        print(
-            f"Target regen flow {service_flow / self.service_to_regen_flow_ratio.value} m3/s"
-        )
-        print(
-            f"Current regen flow {self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value} m3/s"
-        )
-
         # Calculate regenerant flow rate based on service to regeneration flow ratio
+        service_flow = self.process_flow.properties_in[0].flow_vol_phase["Liq"].value
         self.regen_flow.properties_in[0].flow_vol_phase["Liq"].set_value(
             service_flow / self.service_to_regen_flow_ratio.value
         )
 
+        print(f"Initial service flow {service_flow} m3/s")
         print(
             f"New regen flow {self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value} m3/s"
         )
         print(
-            f"Ratio after setting {service_flow / self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value}\n"
+            f"Service to regen ratio {service_flow / self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value}"
         )
 
         # Let the model's expressions calculate concentrations
         for comp in self.config.property_package.component_list:
             if comp == "H2O":
-                self.regen_flow.properties_in[0].conc_mass_phase_comp[
-                    "Liq", comp
-                ].set_value(
-                    997.0
-                )  # kg/m3
+                if self.config.regenerant_calculation_basis == "mass":
+                    conc_value = 997.0  # kg/m³
+                    self.regen_flow.properties_in[0].conc_mass_phase_comp[
+                        "Liq", comp
+                    ].set_value(conc_value)
+                else:
+                    conc_value = 997.0 / 18e-3  # mol/m³
+                    self.regen_flow.properties_in[0].conc_mol_phase_comp[
+                        "Liq", comp
+                    ].set_value(conc_value)
             elif comp in self.config.regenerant_stoich_data[self.config.regenerant]:
-                self.regen_flow.properties_in[0].conc_mass_phase_comp[
-                    "Liq", comp
-                ].set_value(value(self.fresh_regen_concentration))
-            else:
-                self.regen_flow.properties_in[0].conc_mass_phase_comp[
-                    "Liq", comp
-                ].set_value(1e-6)
+                conc_value = value(self.fresh_regen_concentration)
+                if self.config.regenerant_calculation_basis == "molar":
+                    conc_mol = (
+                        conc_value
+                        * self.config.regenerant_stoich_data[self.config.regenerant][
+                            comp
+                        ]
+                    )
+                    self.regen_flow.properties_in[0].conc_mol_phase_comp[
+                        "Liq", comp
+                    ].set_value(conc_mol)
+                else:
+                    self.regen_flow.properties_in[0].conc_mass_phase_comp[
+                        "Liq", comp
+                    ].set_value(conc_value)
+            else:  # non-regenerant component
+                if self.config.regenerant_calculation_basis == "mass":
+                    self.regen_flow.properties_in[0].conc_mass_phase_comp[
+                        "Liq", comp
+                    ].set_value(1e-6)
+                else:
+                    mw = self.config.property_package.mw_comp[comp].value
+                    self.regen_flow.properties_in[0].conc_mol_phase_comp[
+                        "Liq", comp
+                    ].set_value(1e-6 / mw)
 
         # Initialize spent regenerant stream
         print("getting spent regen state")
@@ -1515,9 +1602,13 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
 
         # Use model expressions for spent regenerant concentrations
         for comp in self.config.property_package.component_list:
-            spent_regen_state.conc_mass_phase_comp["Liq", comp].set_value(
-                value(self.spent_regen_concentration[comp])
-            )
+            conc_value = value(self.spent_regen_concentration[comp])
+            if self.config.regenerant_calculation_basis == "mass":
+                spent_regen_state.conc_mass_phase_comp["Liq", comp].set_value(
+                    conc_value
+                )
+            else:
+                spent_regen_state.conc_mol_phase_comp["Liq", comp].set_value(conc_value)
 
         # Initialize the regenerant flow
         print("initializing regen flow")
@@ -1543,8 +1634,13 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                     f"Trouble solving unit model {self.name}, trying one more time"
                 )
                 res = opt.solve(self, tee=slc.tee)
+
         dsb = DiagnosticsToolbox(self)
         dsb.display_variables_at_or_outside_bounds()
+        dsb.report_structural_issues()
+        dsb.display_components_with_inconsistent_units()
+        # dsb.display_overconstrained_set()
+        dsb.display_potential_evaluation_errors()
 
         init_log.info("Initialization Step 2 {}.".format(idaeslog.condition(res)))
 

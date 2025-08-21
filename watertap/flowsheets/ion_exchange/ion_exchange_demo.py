@@ -40,6 +40,15 @@ try:
 except:
     print("Missing dependencies for plot_network")
 
+# Import IDAES visualization tools
+try:
+    from idaes.vis.bokeh_plots import BokehPlot
+
+    IDAES_VIS_AVAILABLE = True
+except ImportError:
+    print("Missing dependencies for IDAES visualization")
+    IDAES_VIS_AVAILABLE = False
+
 
 solver = get_solver()
 
@@ -59,8 +68,10 @@ def main(plot=False):
             m,
             path_to_save="flowsheets/ion_exchange/ion_exchange_flowsheet.png",
         )
+        plot_with_idaes(m)
 
     # See set_operating_conditions for details on operating conditions for this demo.
+    print("setting operating conditions")
     set_operating_conditions(m, ion_config)
     # See initialize_system for details on initializing the models for this demo.
     initialize_system(m)
@@ -151,11 +162,13 @@ def ix_build(ions, target_ion=None, hazardous_waste=False, regenerant="NaCl"):
     #   "target_ion" indicates which ion in the property package will be the reactive ion for the ion exchange model
     #   "hazardous_waste" indicates if the regeneration and spent resin is considered hazardous. If so, it adds costs
     #   "regenerant" indicates the chemical used to regenerate the ion exchange process
+    #   "regenerant_calculation_basis" indicates whether to use mass or molar basis for regenerant calculations
     ix_config = {
         "property_package": m.fs.properties,
         "target_ion": target_ion,
         "hazardous_waste": hazardous_waste,
         "regenerant": regenerant,
+        "regenerant_calculation_basis": "mass",
         "regenerant_stoich_data": ion_config["regenerant_stoich_data"],
         "regenerant_mw_data": ion_config["regenerant_mw_data"],
     }
@@ -272,11 +285,6 @@ def set_operating_conditions(
     ix.service_to_regen_flow_ratio.set_value(3.0)
     ix.regen_efficiency.set_value(0.6)
 
-    # Set regenerant flow rate to satisfy the service_to_regen_flow_ratio constraint
-    # TODO: maybe remove
-    required_regen_flow = flow_in / ix.service_to_regen_flow_ratio.value
-    ix.regen_flow.properties_in[0].flow_vol_phase["Liq"].set_value(required_regen_flow)
-
     # Initialize regenerant stream state
     regen_prop_in = ix.regen_flow.properties_in[0]
 
@@ -304,6 +312,7 @@ def set_operating_conditions(
 
 def initialize_system(m):
     # First we initialize the Feed block using values set in set_operating_conditions
+    print("initializing feed")
     m.fs.feed.initialize()
 
     # We then propagate the state of the Feed block to the ion exchange model...
@@ -312,14 +321,17 @@ def initialize_system(m):
     ix = m.fs.ion_exchange
 
     # Initialize the ion exchange model
+    print("initializing ix")
     m.fs.ion_exchange.initialize()
 
     # With the ion exchange model initialized, we have initial guesses for the Product and Regen blocks
     # and can propagate the state of the IX effluent and regeneration stream.
+    print("propagating states")
     propagate_state(m.fs.ix_to_product)
     propagate_state(m.fs.ix_to_regen)
 
     # Finally, initialize the product and costing blocks
+    print("initializing product")
     m.fs.product.initialize()
     m.fs.costing.initialize()
 
@@ -537,6 +549,141 @@ def display_results(m):
             f'{f"Regen Conc. [{ion}, mg/L]":<40s}{pyunits.convert(prop_regen.conc_mass_phase_comp[liq, ion], to_units=pyunits.mg/pyunits.L)():<40.3e}{"mg/L":<40s}'
         )
         print()
+
+
+def plot_with_idaes(m):
+    """
+    Plot the ion exchange flowsheet using IDAES visualization tools.
+    This demonstrates the use of IDAES built-in plotting capabilities.
+    """
+    if not IDAES_VIS_AVAILABLE:
+        return
+
+    units = []
+    connections = []
+
+    for unit in m.fs.component_objects(pyo.Block, descend_into=True):
+        unit_name = unit.name.split("fs.")[-1]
+        if (
+            "properties" in unit.name
+            or "costing" in unit.name
+            or unit.name.endswith("_expanded")
+            or any(
+                name in unit.name
+                for name in [
+                    "process_flow",
+                    "spent_regenerant",
+                    "fresh_regenerant",
+                    "properties_in",
+                    "properties_out",
+                ]
+            )
+        ):
+            continue
+        units.append(unit_name)
+
+    for arc in m.fs.component_objects(Arc, descend_into=True):
+        source_block = arc.source.parent_block()
+        dest_block = arc.destination.parent_block()
+        if (
+            "properties" in source_block.name
+            or "costing" in source_block.name
+            or "properties" in dest_block.name
+            or "costing" in dest_block.name
+            or any(
+                name in source_block.name
+                for name in [
+                    "process_flow",
+                    "spent_regenerant",
+                    "fresh_regenerant",
+                    "properties_in",
+                    "properties_out",
+                ]
+            )
+            or any(
+                name in dest_block.name
+                for name in [
+                    "process_flow",
+                    "spent_regenerant",
+                    "fresh_regenerant",
+                    "properties_in",
+                    "properties_out",
+                ]
+            )
+        ):
+            continue
+        source_unit = source_block.name.split("fs.")[-1]
+        dest_unit = dest_block.name.split("fs.")[-1]
+        connections.append((source_unit, dest_unit))
+
+    try:
+        import pandas as pd
+
+        ix = m.fs.ion_exchange
+        target_ion = ix.config.target_ion
+
+        data = {
+            "Parameter": [
+                "LCOW",
+                "Capital Cost",
+                "Breakthrough Time",
+                "Bed Depth",
+                "Number Columns",
+            ],
+            "Value": [
+                m.fs.costing.LCOW(),
+                ix.costing.capital_cost(),
+                ix.t_breakthru() / 3600,
+                ix.bed_depth(),
+                ix.number_columns(),
+            ],
+            "Units": ["$/m³", "$", "hr", "m", "---"],
+        }
+
+        df = pd.DataFrame(data)
+
+        plot = BokehPlot()
+
+        from bokeh.plotting import figure
+        from bokeh.models import ColumnDataSource, HoverTool
+
+        source = ColumnDataSource(df)
+
+        p = figure(
+            title="Ion Exchange System Performance",
+            x_range=df["Parameter"],
+            height=400,
+            width=600,
+        )
+
+        p.vbar(
+            x="Parameter",
+            top="Value",
+            width=0.5,
+            source=source,
+            fill_color="#7fc7ff",
+            line_color="#2c3e50",
+        )
+
+        p.xaxis.major_label_orientation = 45
+        p.yaxis.axis_label = "Value"
+        p.title.text_font_size = "16pt"
+
+        hover = HoverTool()
+        hover.tooltips = [
+            ("Parameter", "@Parameter"),
+            ("Value", "@Value"),
+            ("Units", "@Units"),
+        ]
+        p.add_tools(hover)
+
+        plot.current_plot = p
+        plot.save("flowsheets/ion_exchange/idaes_performance_plot.html")
+        plot.show(in_notebook=True)
+
+    except Exception as e:
+        print(f"Could not create Bokeh plot: {e}")
+        print("Continuing with text-based visualization only")
 
 
 if __name__ == "__main__":
