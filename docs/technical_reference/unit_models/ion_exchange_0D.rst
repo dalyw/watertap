@@ -34,6 +34,17 @@ The ion exchange process operates as a cycle with four steps:
 (3) Regeneration
 (4) Rinsing
 
+.. note::
+    The model maintains separate water balances for the service (product) and regeneration streams, though for steady-state modeling,
+    the two streams are modelled as occurring simultaneously. The regeneration flow rate is determined by service_to_regen_flow_ratio.
+    The regeneration stream operates in parallel with the service flow and does not directly affect the product water recovery. 
+
+.. note::
+    Water recovery is calculated as the ratio of product to feed volumetric flow rates.
+    Water losses in the system occur primarily during the backwashing and rinsing steps, where water is used to clean and prepare the resin bed.
+    These losses are accounted for in the cycle time calculations, where the waste time (t_waste) includes regeneration, backwashing, and rinsing periods.
+    The regeneration stream, while operating in parallel, does not mix with the product stream but represents additional water usage.
+
 Critical to predicting performance of an ion exchange process is having an estimate for the breakthrough time,
 or the duration of treatment before the solute begins exiting the column at a concentration unacceptable to the operator.
 At this time, the mass transfer zone is approaching the end of the ion exchange bed, the resin is nearing exhaustion,

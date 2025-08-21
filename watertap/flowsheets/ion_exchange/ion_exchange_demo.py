@@ -15,6 +15,7 @@ from pyomo.environ import (
     assert_optimal_termination,
     TransformationFactory,
     units as pyunits,
+    value,
 )
 from pyomo.network import Arc
 
@@ -26,27 +27,41 @@ from idaes.models.unit_models import Product, Feed
 
 from watertap.core.util.initialization import check_dof
 from watertap.property_models.multicomp_aq_sol_prop_pack import MCASParameterBlock
-from watertap.unit_models.ion_exchange_0D import IonExchange0D
+from watertap.unit_models.ion_exchange_0D import IonExchange0D, RegenerantChem
 from watertap.costing import WaterTAPCosting
 from watertap.core.solvers import get_solver
+from idaes.core.util import DiagnosticsToolbox  # TEMPORARY
 
 import math
+import pandas as pd
+
+try:
+    from watertap.tools.plot_network import plot_network
+except:
+    print("Missing dependencies for plot_network")
 
 
 solver = get_solver()
 
 
-def main():
+def main(plot=False):
     # The IX model currently only supports one "target" ion (i.e., the component in the water source that can be removed by IX)
     # All other ions are inert. This demo does not contain inert ions, but an example can be found in the IX test file:
     # watertap/watertap/unit_models/tests/test_ion_exchange_0D.py
-    target_ion = "Ca_2+"
-    ions = [target_ion]
+    target_ion = "NH4_+"  # , PO4_-"
+    ions = [target_ion, "Na_+", "Cl_-"]
 
     # See ix_build for details on building the model for this demo.
-    m = ix_build(ions)
+    m, ion_config = ix_build(ions)
+
+    if plot:
+        plot_network(
+            m,
+            path_to_save="flowsheets/ion_exchange/ion_exchange_flowsheet.png",
+        )
+
     # See set_operating_conditions for details on operating conditions for this demo.
-    set_operating_conditions(m)
+    set_operating_conditions(m, ion_config)
     # See initialize_system for details on initializing the models for this demo.
     initialize_system(m)
     # Check the degrees of freedom of the model to ensure it is zero.
@@ -79,6 +94,26 @@ def main():
     print(f"Model solve {results.solver.termination_condition.swapcase()}")
     display_results(m)
 
+    regen_props = m.fs.spent_regen.properties[0]
+
+    print("\nConcentrations and flows (mass):")
+    for phase in regen_props.phase_list:
+        for comp in regen_props.component_list:
+            conc = value(regen_props.conc_mass_phase_comp[phase, comp])
+            flow = value(regen_props.flow_mass_phase_comp[phase, comp])
+            print(f"  {phase}, {comp}: {conc} kg/m³")
+            print(f"  {phase}, {comp}: {flow} kg/s")
+        vol_flow = value(regen_props.flow_vol_phase[phase])
+        print(f"  {phase}: {vol_flow} m³/s")
+
+    for ion in ions:
+        print(
+            f'Regen stream concentration for {ion}: {value(m.fs.spent_regen.properties[0].conc_mass_phase_comp["Liq", ion])}'
+        )
+        print(
+            f'Regen stream concentration for {ion}: {value(ix.regeneration_stream[0].conc_mass_phase_comp["Liq", ion])}'
+        )
+
     return m
 
 
@@ -92,11 +127,14 @@ def ix_build(ions, target_ion=None, hazardous_waste=False, regenerant="NaCl"):
     m.fs = FlowsheetBlock(dynamic=False)
 
     # ion_config is the dictionary needed to configure the property package.
-    # For this demo, we only have properties related to the target ion (Ca_2+) and water (H2O)
-    ion_props = get_ion_config(ions)
+    # For this demo, we have properties related to the target ion (Ca_2+),
+    # the dissolved regenerant ions sodium (Na_+) and chloride (Cl_-)  and water (H2O)
+    ion_config = get_ion_config(ions, regenerant)
+    regenerant_stoich = ion_config["regenerant_stoich_data"][regenerant]
+    regenerant_mw = ion_config["regenerant_mw_data"][regenerant]
 
     # The water property package used for the ion exchange model is the multi-component aqueous solution (MCAS) property package
-    m.fs.properties = MCASParameterBlock(**ion_props)
+    m.fs.properties = MCASParameterBlock(**ion_config["prop_config"])
 
     # Add the flowsheet level costing package
     m.fs.costing = WaterTAPCosting()
@@ -106,7 +144,7 @@ def ix_build(ions, target_ion=None, hazardous_waste=False, regenerant="NaCl"):
     # The must use the same property package as the ion exchange model
     m.fs.feed = Feed(property_package=m.fs.properties)
     m.fs.product = Product(property_package=m.fs.properties)
-    m.fs.regen = Product(property_package=m.fs.properties)
+    m.fs.spent_regen = Product(property_package=m.fs.properties)
 
     # Configuration dictionary used to instantiate the ion exchange model:
     #   "property_package" indicates which property package to use for the ion exchange model
@@ -118,6 +156,8 @@ def ix_build(ions, target_ion=None, hazardous_waste=False, regenerant="NaCl"):
         "target_ion": target_ion,
         "hazardous_waste": hazardous_waste,
         "regenerant": regenerant,
+        "regenerant_stoich_data": ion_config["regenerant_stoich_data"],
+        "regenerant_mw_data": ion_config["regenerant_mw_data"],
     }
 
     # Add the ion exchange model to the flowsheet
@@ -126,7 +166,8 @@ def ix_build(ions, target_ion=None, hazardous_waste=False, regenerant="NaCl"):
     # Touch properties so they are available for scaling, initialization, and reporting.
     ix.process_flow.properties_in[0].conc_mass_phase_comp[...]
     ix.process_flow.properties_out[0].conc_mass_phase_comp[...]
-    ix.regeneration_stream[0].conc_mass_phase_comp[...]
+    ix.regen_flow.properties_in[0].conc_mass_phase_comp[...]
+    ix.regen_flow.properties_out[0].conc_mass_phase_comp[...]
     m.fs.feed.properties[0].flow_vol_phase[...]
     m.fs.feed.properties[0].conc_mass_phase_comp[...]
     m.fs.product.properties[0].conc_mass_phase_comp[...]
@@ -153,8 +194,9 @@ def ix_build(ions, target_ion=None, hazardous_waste=False, regenerant="NaCl"):
     # For example, in this next line the outlet Port on the Feed model is connected to the inlet Port on the ion exchange model
     m.fs.feed_to_ix = Arc(source=m.fs.feed.outlet, destination=ix.inlet)
     m.fs.ix_to_product = Arc(source=ix.outlet, destination=m.fs.product.inlet)
-    m.fs.ix_to_regen = Arc(source=ix.regen, destination=m.fs.regen.inlet)
+    m.fs.ix_to_regen = Arc(source=ix.regen_outlet, destination=m.fs.spent_regen.inlet)
 
+    # Expand arcs to create constraints
     TransformationFactory("network.expand_arcs").apply_to(m)
 
     # Scaling variables in the model
@@ -165,27 +207,49 @@ def ix_build(ions, target_ion=None, hazardous_waste=False, regenerant="NaCl"):
         "flow_mol_phase_comp", 1e-4, index=("Liq", "H2O")
     )
     m.fs.properties.set_default_scaling(
-        "flow_mol_phase_comp", 10, index=("Liq", target_ion)
+        "flow_mol_phase_comp", 1e-2, index=("Liq", target_ion)
     )
+
+    for comp in regenerant_stoich:
+        m.fs.properties.set_default_scaling(
+            "flow_mol_phase_comp", 1e-2, index=("Liq", comp)
+        )
+
+    # any additional ions present in the property package
+    for comp in m.fs.properties.component_list:
+        if comp not in regenerant_stoich and comp != target_ion and comp != "H2O":
+            m.fs.properties.set_default_scaling(
+                "flow_mol_phase_comp", 1e-2, index=("Liq", comp)
+            )
+
     # Call calculate_scaling_factors to apply scaling factors for each variable that we haven't set scaling factors for above.
     calculate_scaling_factors(m)
 
-    return m
+    return m, ion_config
 
 
-def set_operating_conditions(m, flow_in=0.05, conc_mass_in=0.1, solver=None):
+def set_operating_conditions(
+    m, ion_config, flow_in=0.05, conc_mass_in=0.1, solver=None
+):
     if solver is None:
         solver = get_solver()
     ix = m.fs.ion_exchange
     target_ion = ix.config.target_ion
 
+    var_args = {
+        ("flow_vol_phase", "Liq"): flow_in,  # m3/s
+        ("conc_mass_phase_comp", ("Liq", target_ion)): conc_mass_in,  # kg/m3
+        ("pressure", None): 101325,
+        ("temperature", None): 298,
+    }
+
+    component_list = list(m.fs.properties.component_list)
+    for comp in component_list:
+        if comp != target_ion and comp != "H2O":
+            var_args[("conc_mass_phase_comp", ("Liq", comp))] = 0.0
+
     m.fs.feed.properties.calculate_state(
-        var_args={
-            ("flow_vol_phase", "Liq"): flow_in,  # m3/s
-            ("conc_mass_phase_comp", ("Liq", target_ion)): conc_mass_in,  # kg/m3
-            ("pressure", None): 101325,
-            ("temperature", None): 298,
-        },
+        var_args=var_args,
         hold_state=True,
     )
     # Fix key decision variables in ion exchange model.
@@ -204,6 +268,39 @@ def set_operating_conditions(m, flow_in=0.05, conc_mass_in=0.1, solver=None):
     ix.bed_porosity.fix()
     ix.dimensionless_time.fix()
 
+    # Set service to regeneration flow ratio and regen efficiency
+    ix.service_to_regen_flow_ratio.set_value(3.0)
+    ix.regen_efficiency.set_value(0.6)
+
+    # Set regenerant flow rate to satisfy the service_to_regen_flow_ratio constraint
+    # TODO: maybe remove
+    required_regen_flow = flow_in / ix.service_to_regen_flow_ratio.value
+    ix.regen_flow.properties_in[0].flow_vol_phase["Liq"].set_value(required_regen_flow)
+
+    # Initialize regenerant stream state
+    regen_prop_in = ix.regen_flow.properties_in[0]
+
+    # Set regenerant concentrations based on dosed mass and flow rate
+    regenerant_stoich = ix.config.regenerant_stoich_data[ix.config.regenerant]
+    for comp in component_list:
+        if comp == "H2O":
+            regen_prop_in.conc_mass_phase_comp["Liq", comp].set_value(997.0)  # kg/m3
+        elif comp in regenerant_stoich:
+            # Use the model's regenerant concentration expression
+            conc = (
+                value(ix.fresh_regen_concentration) * regenerant_stoich[comp]
+            )  # kg/m3
+            regen_prop_in.conc_mass_phase_comp["Liq", comp].set_value(conc)
+        else:
+            regen_prop_in.conc_mass_phase_comp["Liq", comp].set_value(0.0)
+
+    # Initialize spent regenerant stream state
+    regen_prop_out = ix.regen_flow.properties_out[0]
+    for comp in component_list:
+        regen_prop_out.conc_mass_phase_comp["Liq", comp].set_value(
+            value(ix.spent_regen_concentration[comp])
+        )
+
 
 def initialize_system(m):
     # First we initialize the Feed block using values set in set_operating_conditions
@@ -211,15 +308,19 @@ def initialize_system(m):
 
     # We then propagate the state of the Feed block to the ion exchange model...
     propagate_state(m.fs.feed_to_ix)
-    # ... and then initialize the ion exchange model.
+
+    ix = m.fs.ion_exchange
+
+    # Initialize the ion exchange model
     m.fs.ion_exchange.initialize()
+
     # With the ion exchange model initialized, we have initial guesses for the Product and Regen blocks
     # and can propagate the state of the IX effluent and regeneration stream.
     propagate_state(m.fs.ix_to_product)
     propagate_state(m.fs.ix_to_regen)
-    # Finally, we initialize the product, regen and costing blocks.
+
+    # Finally, initialize the product and costing blocks
     m.fs.product.initialize()
-    m.fs.regen.initialize()
     m.fs.costing.initialize()
 
 
@@ -244,7 +345,7 @@ def optimize_system(m):
     propagate_state(m.fs.ix_to_regen)
     # ...and re-initialize them to our new conditions.
     m.fs.product.initialize()
-    m.fs.regen.initialize()
+    m.fs.spent_regen.initialize()
 
     # To adjust solution to fixed-pattern to achieve desired effluent, must unfix dimensionless_time.
     ix.dimensionless_time.unfix()
@@ -256,16 +357,19 @@ def optimize_system(m):
     assert_optimal_termination(optimized_results)
 
 
-def get_ion_config(ions):
+def get_ion_config(ions, regenerant="NaCl"):
 
     if not isinstance(ions, (list, tuple)):
         ions = [ions]
+
+    # Ion diffusivity, molecular weight, and charge
     diff_data = {
         "Na_+": 1.33e-9,
         "Ca_2+": 9.2e-10,
         "Cl_-": 2.03e-9,
         "Mg_2+": 0.706e-9,
         "SO4_2-": 1.06e-9,
+        "NH4_+": 1.96e-9,
     }
     mw_data = {
         "Na_+": 23e-3,
@@ -273,20 +377,107 @@ def get_ion_config(ions):
         "Cl_-": 35e-3,
         "Mg_2+": 24e-3,
         "SO4_2-": 96e-3,
+        "NH4_+": 18e-3,  # kg/mol
     }
-    charge_data = {"Na_+": 1, "Ca_2+": 2, "Cl_-": -1, "Mg_2+": 2, "SO4_2-": -2}
-    ion_config = {
+    charge_data = {
+        "Na_+": 1,
+        "Ca_2+": 2,
+        "Cl_-": -1,
+        "Mg_2+": 2,
+        "SO4_2-": -2,
+        "NH4_+": 1,
+    }
+
+    # Regenerant stoichiometry and molecular weight (as solid compound)
+    regenerant_stoich_data = {
+        "HCl": {
+            "H_+": 1,
+            "Cl_-": 1,
+        },
+        "NaOH": {
+            "Na_+": 1,
+            "OH_-": 1,
+        },
+        "H2SO4": {
+            "H_+": 2,
+            "SO4_2-": 1,
+        },
+        "NaCl": {
+            "Na_+": 1,
+            "Cl_-": 1,
+        },
+        "MeOH": {
+            "CH3OH": 1,
+        },
+        "single_use": {},
+    }
+
+    regenerant_mw_data = {
+        "HCl": 36.46,  # g/mol
+        "NaOH": 40.00,  # g/mol
+        "H2SO4": 98.08,  # g/mol
+        "NaCl": 58.44,  # g/mol
+        "MeOH": 32.04,  # g/mol
+        "single_use": 0.0,  # g/mol
+    }
+
+    # prop_config is without regenerant data, to be passed to property package
+    prop_config = {
         "solute_list": [],
         "diffusivity_data": {},
         "mw_data": {"H2O": 18e-3},
         "charge": {},
     }
+
     for ion in ions:
-        ion_config["solute_list"].append(ion)
-        ion_config["diffusivity_data"][("Liq", ion)] = diff_data[ion]
-        ion_config["mw_data"][ion] = mw_data[ion]
-        ion_config["charge"][ion] = charge_data[ion]
-    return ion_config
+        prop_config["solute_list"].append(ion)
+        prop_config["diffusivity_data"][("Liq", ion)] = diff_data[ion]
+        prop_config["mw_data"][ion] = mw_data[ion]
+        prop_config["charge"][ion] = charge_data[ion]
+
+    # Add ions from regenerant dissolution to the model, if they are not already present
+    regenerant_ions = list(regenerant_stoich_data[regenerant].keys())
+
+    for ion in regenerant_ions:
+        if ion not in ions and ion in diff_data:
+            ions.append(ion)
+            prop_config["solute_list"].append(ion)
+            prop_config["diffusivity_data"][("Liq", ion)] = diff_data[ion]
+            prop_config["mw_data"][ion] = mw_data[ion]
+            prop_config["charge"][ion] = charge_data[ion]
+
+    # Returns the prop_config for MCASParameterBlock as well as the regenerant stoich and mw data
+    return {
+        "prop_config": prop_config,
+        "regenerant_stoich_data": regenerant_stoich_data,
+        "regenerant_mw_data": regenerant_mw_data,
+    }
+
+
+def get_regenerant_stoichiometry(regenerant):
+    regenerant_stoich_data = {
+        "HCl": {"H_+": 1, "Cl_-": 1},
+        "NaOH": {"Na_+": 1, "OH_-": 1},
+        "H2SO4": {"H_+": 2, "SO4_2-": 1},
+        "NaCl": {"Na_+": 1, "Cl_-": 1},
+        "MeOH": {},  # No dissociation
+        "single_use": {},  # No dissociation
+    }
+
+    return regenerant_stoich_data[regenerant]
+
+
+def get_regenerant_mw(regenerant):
+    regenerant_mw_data = {
+        "HCl": 36.46e-3,
+        "NaOH": 40.0e-3,
+        "H2SO4": 98.08e-3,
+        "NaCl": 58.44e-3,
+        "MeOH": 32.04e-3,
+        "single_use": 0,
+    }
+
+    return {regenerant: regenerant_mw_data[regenerant]}
 
 
 def display_results(m):
@@ -297,6 +488,7 @@ def display_results(m):
 
     prop_in = ix.process_flow.properties_in[0]
     prop_out = ix.process_flow.properties_out[0]
+    prop_regen = m.fs.spent_regen.properties[0]
 
     recovery = prop_out.flow_vol_phase["Liq"]() / prop_in.flow_vol_phase["Liq"]()
     target_ion = ix.config.target_ion
@@ -341,7 +533,11 @@ def display_results(m):
         print(
             f'{f"Conc. Out [{ion}, mg/L]":<40s}{pyunits.convert(prop_out.conc_mass_phase_comp[liq, ion], to_units=pyunits.mg/pyunits.L)():<40.3e}{"mg/L":<40s}'
         )
+        print(
+            f'{f"Regen Conc. [{ion}, mg/L]":<40s}{pyunits.convert(prop_regen.conc_mass_phase_comp[liq, ion], to_units=pyunits.mg/pyunits.L)():<40.3e}{"mg/L":<40s}'
+        )
+        print()
 
 
 if __name__ == "__main__":
-    m = main()
+    m = main(plot=False)
