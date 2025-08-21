@@ -1,59 +1,13 @@
-import numpy as np
 import pyomo.environ as pyo
-from pyomo.network import Arc, Port
-import pandas as pd
+from pyomo.network import Arc
 
-import dash
 from dash import Dash, html
 import dash_cytoscape as cyto
-
-# def create_stream_table(m):
-#     """
-#     Create a stream table from the model's state variables.
-
-#     Args:
-#         m (pyomo.core.base.PyomoModel): The Pyomo model to create stream table from.
-
-#     Returns:
-#         pandas.DataFrame: Stream table with component values for each stream.
-#     """
-#     stream_table = pd.DataFrame()
-
-#     # Get all arcs in the model
-#     for arc in m.fs.component_objects(Arc, descend_into=True):
-#         source_name = arc.source.parent_block().name.split("fs.")[-1]
-#         dest_name = arc.destination.parent_block().name.split("fs.")[-1]
-
-#         # Get the state block at the source
-#         source_state = arc.source.parent_block()
-
-#         # Get component values from the state block
-#         component_values = {}
-#         for var in source_state.component_objects(pyo.Var, descend_into=True):
-#             if var.name.endswith("_state"):
-#                 for idx in var:
-#                     try:
-#                         value = float(pyo.value(var[idx]))
-#                         component_values[var.name] = np.round(value, 3)
-#                     except (ValueError, TypeError):
-#                         component_values[var.name] = "-"
-
-#         # Add to stream table
-#         stream_key = f"{source_name}__{dest_name}".replace("_", "_")
-#         stream_table[stream_key] = pd.Series(component_values)
-
-#     return stream_table
 
 
 def plot_network(
     m,
-    stream_table=None,
     path_to_save=None,
-    figsize=(1000, 600),
-    column_mapping=None,
-    position_adjustments=None,
-    included_types=None,
-    node_order=None,
 ):
     """
     Interactive flowsheet plot using Dash Cytoscape.
@@ -69,8 +23,6 @@ def plot_network(
         "properties_in",
         "properties_out",
     ]
-    if stream_table is None:
-        stream_table = pd.DataFrame()
 
     # Collect unit nodes
     unit_nodes = []

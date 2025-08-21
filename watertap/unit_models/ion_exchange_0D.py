@@ -51,6 +51,8 @@ from watertap.core import ControlVolume0DBlock, InitializationMixin
 from watertap.core.util.initialization import interval_initializer
 from watertap.costing.unit_models.ion_exchange import cost_ion_exchange
 
+from idaes.core.util import DiagnosticsToolbox  # TEMPORARY
+
 __author__ = "Kurban Sitterley"
 
 
@@ -1469,15 +1471,13 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
 
         # Debug print statements
         service_flow = self.process_flow.properties_in[0].flow_vol_phase["Liq"].value
-        print(f"\nDEBUG - Initial service flow: {service_flow} m3/s")
+        print(f"\nInitial service flow {service_flow} m3/s")
+        print(f"Service to regen ratio {self.service_to_regen_flow_ratio.value}")
         print(
-            f"DEBUG - Service to regen ratio: {self.service_to_regen_flow_ratio.value}"
+            f"Target regen flow {service_flow / self.service_to_regen_flow_ratio.value} m3/s"
         )
         print(
-            f"DEBUG - Target regen flow: {service_flow / self.service_to_regen_flow_ratio.value} m3/s"
-        )
-        print(
-            f"DEBUG - Current regen flow: {self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value} m3/s"
+            f"Current regen flow {self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value} m3/s"
         )
 
         # Calculate regenerant flow rate based on service to regeneration flow ratio
@@ -1486,10 +1486,10 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
         )
 
         print(
-            f"DEBUG - New regen flow: {self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value} m3/s"
+            f"New regen flow {self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value} m3/s"
         )
         print(
-            f"DEBUG - Ratio after setting: {service_flow / self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value}\n"
+            f"Ratio after setting {service_flow / self.regen_flow.properties_in[0].flow_vol_phase['Liq'].value}\n"
         )
 
         # Let the model's expressions calculate concentrations
@@ -1510,6 +1510,7 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                 ].set_value(1e-6)
 
         # Initialize spent regenerant stream
+        print("getting spent regen state")
         spent_regen_state = self.regen_flow.properties_out[0]
 
         # Use model expressions for spent regenerant concentrations
@@ -1519,6 +1520,7 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
             )
 
         # Initialize the regenerant flow
+        print("initializing regen flow")
         self.regen_flow.initialize(
             outlvl=outlvl,
             optarg=optarg,
@@ -1529,9 +1531,11 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
         init_log.info("Initialization Step 1c Complete.")
 
         # pre-solve using interval arithmetic
+        print("pre-solving")
         interval_initializer(self)
 
         # Solve unit
+        print("solving")
         with idaeslog.solver_log(solve_log, idaeslog.DEBUG) as slc:
             res = opt.solve(self, tee=slc.tee)
             if not check_optimal_termination(res):
@@ -1539,6 +1543,8 @@ class IonExchangeODData(InitializationMixin, UnitModelBlockData):
                     f"Trouble solving unit model {self.name}, trying one more time"
                 )
                 res = opt.solve(self, tee=slc.tee)
+        dsb = DiagnosticsToolbox(self)
+        dsb.display_variables_at_or_outside_bounds()
 
         init_log.info("Initialization Step 2 {}.".format(idaeslog.condition(res)))
 

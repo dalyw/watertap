@@ -54,35 +54,11 @@ def main(plot=False):
     # See ix_build for details on building the model for this demo.
     m, ion_config = ix_build(ions)
 
-    # Plot network initialization
-    stream_table = pd.DataFrame()
-    # Create column mapping for stream names to node names
-    column_mapping = {}
-
-    # Define position adjustments for better layout
-    position_adjustments = {
-        "ion_exchange": [0, 0],
-        "ion_exchange_inlet": [-1, 0],
-        "ion_exchange_outlet": [1, 0],
-        "ion_exchange_regen": [0, -1],
-        "product": [2, 0],
-        "regen": [0, -2],
-    }
-
-    # Plot the network and save to file
     if plot:
-        try:
-            plot_network(
-                m,
-                stream_table,
-                path_to_save="flowsheets/ion_exchange/ion_exchange_flowsheet.png",
-                figsize=(10, 8),
-                column_mapping=column_mapping,
-                position_adjustments=position_adjustments,
-                node_order=["feed", "ion_exchange", "regen", "product"],
-            )
-        except:
-            print("Error plotting network. This may be due to missing dependencies.")
+        plot_network(
+            m,
+            path_to_save="flowsheets/ion_exchange/ion_exchange_flowsheet.png",
+        )
 
     # See set_operating_conditions for details on operating conditions for this demo.
     set_operating_conditions(m, ion_config)
@@ -296,6 +272,11 @@ def set_operating_conditions(
     ix.service_to_regen_flow_ratio.set_value(3.0)
     ix.regen_efficiency.set_value(0.6)
 
+    # Set regenerant flow rate to satisfy the service_to_regen_flow_ratio constraint
+    # TODO: maybe remove
+    required_regen_flow = flow_in / ix.service_to_regen_flow_ratio.value
+    ix.regen_flow.properties_in[0].flow_vol_phase["Liq"].set_value(required_regen_flow)
+
     # Initialize regenerant stream state
     regen_prop_in = ix.regen_flow.properties_in[0]
 
@@ -303,7 +284,7 @@ def set_operating_conditions(
     regenerant_stoich = ix.config.regenerant_stoich_data[ix.config.regenerant]
     for comp in component_list:
         if comp == "H2O":
-            regen_prop_in.conc_mass_phase_comp["Liq", "H2O"].set_value(997.0)  # kg/m3
+            regen_prop_in.conc_mass_phase_comp["Liq", comp].set_value(997.0)  # kg/m3
         elif comp in regenerant_stoich:
             # Use the model's regenerant concentration expression
             conc = (
@@ -315,8 +296,6 @@ def set_operating_conditions(
 
     # Initialize spent regenerant stream state
     regen_prop_out = ix.regen_flow.properties_out[0]
-
-    # Calculate spent regenerant concentrations
     for comp in component_list:
         regen_prop_out.conc_mass_phase_comp["Liq", comp].set_value(
             value(ix.spent_regen_concentration[comp])
