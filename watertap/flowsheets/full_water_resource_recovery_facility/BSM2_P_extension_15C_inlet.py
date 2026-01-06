@@ -1,7 +1,7 @@
 #################################################################################
-# WaterTAP Copyright (c) 2020-2026, The Regents of the University of California,
+# WaterTAP Copyright (c) 2020-2024, The Regents of the University of California,
 # through Lawrence Berkeley National Laboratory, Oak Ridge National Laboratory,
-# National Laboratory of the Rockies, and National Energy Technology
+# National Renewable Energy Laboratory, and National Energy Technology
 # Laboratory (subject to receipt of any required approvals from the U.S. Dept.
 # of Energy). All rights reserved.
 #
@@ -388,7 +388,9 @@ def set_operating_conditions(m, bio_P=False):
     # Feed Water Conditions
     print(f"DOF before feed: {degrees_of_freedom(m)}")
     m.fs.FeedWater.flow_vol.fix(20935.15 * pyo.units.m**3 / pyo.units.day)
-    m.fs.FeedWater.temperature.fix(308.15 * pyo.units.K)
+    m.fs.FeedWater.temperature.fix(
+        288.0 * pyo.units.K
+    )  # ~15°C to match BSM2 standard TODO: change back
     m.fs.FeedWater.pressure.fix(1 * pyo.units.atm)
     m.fs.FeedWater.conc_mass_comp[0, "S_O2"].fix(1e-6 * pyo.units.g / pyo.units.m**3)
     m.fs.FeedWater.conc_mass_comp[0, "S_F"].fix(1e-6 * pyo.units.g / pyo.units.m**3)
@@ -515,20 +517,14 @@ def scale_system(m, bio_P=False):
     ad_scaler = ADScaler()
     ad_scaler.scale_model(m.fs.AD)
 
-    for vardata in m.fs.AD.KH_co2.values():
-        set_scaling_factor(vardata, 1e1)
-    for vardata in m.fs.AD.KH_ch4.values():
-        set_scaling_factor(vardata, 1e1)
-    for vardata in m.fs.AD.KH_h2.values():
-        set_scaling_factor(vardata, 1e2)
-    for vardata in m.fs.AD.liquid_phase.heat.values():
-        set_scaling_factor(vardata, 1e1)
+    set_scaling_factor(m.fs.AD.KH_co2, 1e1)
+    set_scaling_factor(m.fs.AD.KH_ch4, 1e1)
+    set_scaling_factor(m.fs.AD.KH_h2, 1e2)
+    set_scaling_factor(m.fs.AD.liquid_phase.heat, 1e1)
     if bio_P:
-        for blkdata in m.fs.AD.liquid_phase.reactions.values():
-            set_scaling_factor(blkdata.S_H, 1e1)
+        set_scaling_factor(m.fs.AD.liquid_phase.reactions[0].S_H, 1e1)
     else:
-        for blkdata in m.fs.AD.liquid_phase.reactions.values():
-            set_scaling_factor(blkdata.S_H, 1e2)
+        set_scaling_factor(m.fs.AD.liquid_phase.reactions[0].S_H, 1e2)
 
     cstr_list = [m.fs.R1, m.fs.R2, m.fs.R3, m.fs.R4]
     cstr_scaler = CSTRScaler()
@@ -536,8 +532,7 @@ def scale_system(m, bio_P=False):
         cstr_scaler.scale_model(unit)
 
     for unit in cstr_list:
-        for vardata in unit.hydraulic_retention_time.values():
-            set_scaling_factor(vardata, 1e-3)
+        set_scaling_factor(unit.hydraulic_retention_time, 1e-3)
 
     aeration_list = [m.fs.R5, m.fs.R6, m.fs.R7]
     aeration_scaler = AerationTankScaler()
@@ -545,39 +540,29 @@ def scale_system(m, bio_P=False):
         aeration_scaler.scale_model(unit)
 
     for R in aeration_list:
-        for vardata in R.KLa.values():
-            set_scaling_factor(vardata, 1e-1)
+        set_scaling_factor(R.KLa, 1e-1)
         if bio_P:
-            for vardata in R.hydraulic_retention_time.values():
-                set_scaling_factor(vardata, 1e-2)
+            set_scaling_factor(R.hydraulic_retention_time[0], 1e-2)
 
     reactor_list = [m.fs.R1, m.fs.R2, m.fs.R3, m.fs.R4, m.fs.R5, m.fs.R6, m.fs.R7]
     for unit in reactor_list:
-        for blkdata in unit.control_volume.reactions.values():
-            for vardata in blkdata.rate_expression.values():
-                set_scaling_factor(vardata, 1e3)
-        for condata in unit.cstr_performance_eqn.values():
-            set_scaling_factor(condata, 1e3)
-        for (
-            condata
-        ) in unit.control_volume.rate_reaction_stoichiometry_constraint.values():
-            set_scaling_factor(condata, 1e3)
-        for condata in unit.control_volume.material_balances.values():
-            set_scaling_factor(condata, 1e3)
+        set_scaling_factor(unit.control_volume.reactions[0.0].rate_expression, 1e3)
+        set_scaling_factor(unit.cstr_performance_eqn, 1e3)
+        set_scaling_factor(
+            unit.control_volume.rate_reaction_stoichiometry_constraint, 1e3
+        )
+        set_scaling_factor(unit.control_volume.material_balances, 1e3)
 
     if bio_P:
-        for t in m.fs.time:
-            set_scaling_factor(
-                m.fs.R5.control_volume.rate_reaction_generation[t, "Liq", "S_I"], 1e-3
-            )
-            # TODO switch away from constraint_scaling_transform when the flowsheet's
-            # scaling is improved.
-            constraint_scaling_transform(
-                m.fs.R5.control_volume.rate_reaction_stoichiometry_constraint[
-                    t, "Liq", "H2O"
-                ],
-                1e-6,
-            )
+        set_scaling_factor(
+            m.fs.R5.control_volume.rate_reaction_generation[0, "Liq", "S_I"], 1e-3
+        )
+        constraint_scaling_transform(
+            m.fs.R5.control_volume.rate_reaction_stoichiometry_constraint[
+                0, "Liq", "H2O"
+            ],
+            1e-6,
+        )
 
     clarifier_list = [m.fs.CL, m.fs.CL2]
     clarifier_scaler = ClarifierScaler()
@@ -596,8 +581,7 @@ def scale_system(m, bio_P=False):
     ad_as_scaler = ADM1ASM2dScaler()
     ad_as_scaler.scale_model(m.fs.translator_adm1_asm2d)
 
-    for vardata in m.fs.P1.control_volume.work.values():
-        set_scaling_factor(vardata, 1e-2)
+    set_scaling_factor(m.fs.P1.control_volume.work[0], 1e-2)
 
     for var in m.fs.component_data_objects(pyo.Var, descend_into=True):
         if "flow_vol" in var.name:
@@ -624,11 +608,16 @@ def scale_system(m, bio_P=False):
 
 
 def initialize_system(m, bio_P=False, solver=None):
+    # Initialize temperature variables to 288 K (~15°C)
+    for var in m.fs.component_data_objects(pyo.Var, descend_into=True):
+        if "temperature" in var.name and not var.fixed:
+            var.set_value(288.0)
+
     # Initialize flowsheet
     # Apply sequential decomposition - 1 iteration should suffice
     seq = SequentialDecomposition()
     seq.options.tear_method = "Direct"
-    seq.options.iterLim = 1
+    seq.options.iterLim = 3  # TODO: change back to 1?
     seq.options.tear_set = [m.fs.stream5, m.fs.stream10adm]
 
     G = seq.create_graph(m)
@@ -661,7 +650,7 @@ def initialize_system(m, bio_P=False, solver=None):
                 (0, "X_PP"): 1.16,
                 (0, "X_S"): 0.059,
             },
-            "temperature": {0: 308.15},
+            "temperature": {0: 288.0},  # ~15°C for biological process TODO: change back
             "pressure": {0: 101325},
         }
 
@@ -687,7 +676,7 @@ def initialize_system(m, bio_P=False, solver=None):
                 (0, "X_PP"): 2.9,
                 (0, "X_S"): 3.8,
             },
-            "temperature": {0: 308.15},
+            "temperature": {0: 288.0},  # ~15°C for biological process TODO: change back
             "pressure": {0: 101325},
         }
 
@@ -714,7 +703,7 @@ def initialize_system(m, bio_P=False, solver=None):
                 (0, "X_PP"): 1.13,
                 (0, "X_S"): 0.057,
             },
-            "temperature": {0: 308.15},
+            "temperature": {0: 288.0},  # ~15°C for biological process TODO: change back
             "pressure": {0: 101325},
         }
 
@@ -740,7 +729,7 @@ def initialize_system(m, bio_P=False, solver=None):
                 (0, "X_PP"): 2.7,
                 (0, "X_S"): 3.9,
             },
-            "temperature": {0: 308.15},
+            "temperature": {0: 288.0},  # ~15°C for biological process TODO: change back
             "pressure": {0: 101325},
         }
 
@@ -755,7 +744,12 @@ def initialize_system(m, bio_P=False, solver=None):
         if bio_P:
             unit.initialize(outlvl=idaeslog.DEBUG)
         else:
-            initializer.initialize(unit, output_level=_log.debug)
+            # Use standard initialize for Mixers since using lower temp
+            # (enthalpy balance can be sensitive)
+            if hasattr(unit, "feed_water") or "MX" in unit.name:
+                unit.initialize(outlvl=idaeslog.WARNING)
+            else:
+                initializer.initialize(unit, output_level=_log.debug)
 
     seq.run(m, function)
 
