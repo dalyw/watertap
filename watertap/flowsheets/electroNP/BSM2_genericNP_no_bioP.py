@@ -115,6 +115,8 @@ _log = idaeslog.getLogger(__name__)
 
 this_file_dir = os.path.dirname(os.path.abspath(__file__))
 
+app = None
+
 
 def safe_value(x):
     try:
@@ -186,6 +188,7 @@ def main(
     mgcl2_dosage=0.388,
     water_recovery=0.99,
     apply_costing=True,
+    use_idaes_2_10=None,
 ):
     m = build_flowsheet(has_genericNP=has_genericNP, basis=basis)
 
@@ -204,6 +207,7 @@ def main(
         energy_intensity=energy_intensity,
         mgcl2_dosage=mgcl2_dosage,
         water_recovery=water_recovery,
+        use_idaes_2_10=use_idaes_2_10,
     )
 
     # Now initialize the process (with costing present if apply_costing=True)
@@ -224,7 +228,7 @@ def main(
         stream_table = create_stream_table_dataframe(stream_dict, time_point=0)
 
         # Create and run Dash app for initial network visualization
-        app = create_dash_app(m, stream_table=stream_table, show_labels=True)
+        # app = create_dash_app(m, stream_table=stream_table, show_labels=True)
         if app is not None:
             port = find_available_port()
             print(f"Starting initial network visualization on port {port}")
@@ -234,8 +238,6 @@ def main(
                     f"Initial network visualization available at http://127.0.0.1:{port}"
                 )
                 time.sleep(3)  # Give time for the visualization to load
-        else:
-            print("Failed to create initial network visualization")
     initialize_system(m, has_genericNP=has_genericNP)
     for mx in m.fs.mixers:
         mx.pressure_equality_constraints[0.0, 2].deactivate()
@@ -615,8 +617,10 @@ def build_flowsheet(has_genericNP=False, basis="mass"):
 
     m.fs.aerobic_reactors = (m.fs.R5, m.fs.R6, m.fs.R7)
     for R in m.fs.aerobic_reactors:
-        iscale.set_scaling_factor(R.KLa, 1e-2)
-        iscale.set_scaling_factor(R.hydraulic_retention_time[0], 1e-3)
+        for vardata in R.KLa.values():
+            iscale.set_scaling_factor(vardata, 1e-2)
+        for vardata in R.hydraulic_retention_time.values():
+            iscale.set_scaling_factor(vardata, 1e-3)
 
     @m.fs.R5.Constraint(m.fs.time, doc="Mass transfer constraint for R3")
     def mass_transfer_R5(self, t):
@@ -658,6 +662,7 @@ def set_operating_conditions(
     energy_intensity=0.044,
     mgcl2_dosage=0.388,
     water_recovery=0.99,
+    use_idaes_2_10=False,
 ):
     # Feed Water Conditions
     print(f"DOF before feed: {degrees_of_freedom(m)}")
@@ -801,27 +806,47 @@ def set_operating_conditions(
         m.fs.genericNP.magnesium_chloride_dosage.fix(mgcl2_dosage * mg_units)
         m.fs.genericNP.frac_mass_H2O_treated[0].fix(water_recovery)
 
-    def scale_variables(m):
-        for var in m.fs.component_data_objects(pyo.Var, descend_into=True):
-            if "flow_vol" in var.name:
-                iscale.set_scaling_factor(var, 1e2)
-            if "temperature" in var.name:
-                iscale.set_scaling_factor(var, 1e-2)
-            if "pressure" in var.name:
-                iscale.set_scaling_factor(var, 1e-5)
-            if "conc_mass_comp" in var.name:
-                iscale.set_scaling_factor(var, 1e1)
+    if use_idaes_2_10:
+        # IDAES 2.10.0+ scaling approach (Python 3.12)
+        # AD scaling before calculate_scaling_factors
+        for vardata in m.fs.AD.KH_co2.values():
+            iscale.set_scaling_factor(vardata, 1e1)
+        for vardata in m.fs.AD.KH_ch4.values():
+            iscale.set_scaling_factor(vardata, 1e1)
+        for vardata in m.fs.AD.KH_h2.values():
+            iscale.set_scaling_factor(vardata, 1e2)
+        for vardata in m.fs.AD.liquid_phase.heat.values():
+            iscale.set_scaling_factor(vardata, 1e1)
 
-    for unit in ("R1", "R2", "R3", "R4", "R5", "R6", "R7"):
-        block = getattr(m.fs, unit)
-        iscale.set_scaling_factor(
-            block.control_volume.reactions[0.0].rate_expression, 1e3
-        )
-        iscale.set_scaling_factor(block.cstr_performance_eqn, 1e3)
-        iscale.set_scaling_factor(
-            block.control_volume.rate_reaction_stoichiometry_constraint, 1e3
-        )
-        iscale.set_scaling_factor(block.control_volume.material_balances, 1e3)
+        for blkdata in m.fs.AD.liquid_phase.reactions.values():
+            iscale.set_scaling_factor(blkdata.S_H, 1e2)
+
+        # Reactor scaling - iterate over values()
+        for unit in ("R1", "R2", "R3", "R4", "R5", "R6", "R7"):
+            block = getattr(m.fs, unit)
+            for blkdata in block.control_volume.reactions.values():
+                for vardata in blkdata.rate_expression.values():
+                    iscale.set_scaling_factor(vardata, 1e3)
+            for condata in block.cstr_performance_eqn.values():
+                iscale.set_scaling_factor(condata, 1e3)
+            for (
+                condata
+            ) in block.control_volume.rate_reaction_stoichiometry_constraint.values():
+                iscale.set_scaling_factor(condata, 1e3)
+            for condata in block.control_volume.material_balances.values():
+                iscale.set_scaling_factor(condata, 1e3)
+    else:
+        # IDAES 2.9.0 scaling approach (Python 3.11)
+        for unit in ("R1", "R2", "R3", "R4", "R5", "R6", "R7"):
+            block = getattr(m.fs, unit)
+            iscale.set_scaling_factor(
+                block.control_volume.reactions[0.0].rate_expression, 1e3
+            )
+            iscale.set_scaling_factor(block.cstr_performance_eqn, 1e3)
+            iscale.set_scaling_factor(
+                block.control_volume.rate_reaction_stoichiometry_constraint, 1e3
+            )
+            iscale.set_scaling_factor(block.control_volume.material_balances, 1e3)
 
     # Initialize and scale genericNP unit
     if m.fs.has_genericNP:
@@ -836,8 +861,26 @@ def set_operating_conditions(
         iscale.set_scaling_factor(m.fs.genericNP.magnesium_chloride_dosage, 1e0)
         iscale.set_scaling_factor(m.fs.genericNP.frac_mass_H2O_treated, 1e0)
 
-    # Apply scaling
-    scale_variables(m)
+    # Apply scale_variables for IDAES 2.9.0
+    if not use_idaes_2_10:
+
+        def scale_variables(m):
+            for var in m.fs.component_data_objects(pyo.Var, descend_into=True):
+                if "flow_vol" in var.name:
+                    iscale.set_scaling_factor(var, 1e2)
+                if "temperature" in var.name:
+                    iscale.set_scaling_factor(var, 1e-2)
+                if "pressure" in var.name:
+                    iscale.set_scaling_factor(var, 1e-5)
+                if "conc_mass_comp" in var.name:
+                    iscale.set_scaling_factor(var, 1e1)
+                if "anions" in var.name:
+                    iscale.set_scaling_factor(var, 1e0)
+                if "cations" in var.name:
+                    iscale.set_scaling_factor(var, 1e1)
+
+        scale_variables(m)
+
     iscale.calculate_scaling_factors(m)
 
 
@@ -967,8 +1010,21 @@ def initialize_system(m, has_genericNP=False):
     seq.set_guesses_for(m.fs.R3.inlet, tear_guesses)
     seq.set_guesses_for(m.fs.translator_asm2d_adm1.inlet, tear_guesses2)
 
+    # initializer = BlockTriangularizationInitializer(
+    #     calculate_variable_options={"eps": 2e-8}, skip_final_solve=True
+    # )
+
     def function(unit):
         unit.initialize(outlvl=idaeslog.INFO, solver="ipopt-watertap")
+
+    #     try:
+    #         # Mixers can be touchy with BTI; follow BSM2 pattern
+    #         if hasattr(unit, "feed_water") or "MX" in unit.name:
+    #             unit.initialize(outlvl=idaeslog.WARNING, solver="ipopt-watertap")
+    #         else:
+    #             initializer.initialize(unit, outlvl=idaeslog.WARNING)
+    #     except InitializationError:
+    #         pass
 
     seq.run(m, function)
 
@@ -1057,6 +1113,7 @@ def build_model(**kwargs):
         energy_intensity=energy_intensity,
         mgcl2_dosage=mgcl2_dosage,
         water_recovery=water_recovery,
+        use_idaes_2_10=None,
     )
     for mx in m.fs.mixers:
         mx.pressure_equality_constraints[0.0, 2].deactivate()
@@ -1104,6 +1161,7 @@ def reinitialize_system(
     energy_intensity=0.044,
     mgcl2_dosage=0.388,
     water_recovery=0.99,
+    use_idaes_2_10=None,
 ):
     set_operating_conditions(
         model,
@@ -1112,6 +1170,7 @@ def reinitialize_system(
         energy_intensity=energy_intensity,
         mgcl2_dosage=mgcl2_dosage,
         water_recovery=water_recovery,
+        use_idaes_2_10=use_idaes_2_10,
     )
     initialize_system(model, has_genericNP=True)
 
@@ -1205,7 +1264,7 @@ if __name__ == "__main__":
         print(stream_table_dataframe_to_string(stream_table))
 
         # Create and run Dash app for final visualization with stream data
-        app = create_dash_app(m, stream_table=stream_table, show_labels=True)
+        # app = create_dash_app(m, stream_table=stream_table, show_labels=True)
         if app is not None:
             port = find_available_port()
             print(f"Starting final network visualization on port {port}")
@@ -1221,10 +1280,6 @@ if __name__ == "__main__":
                         time.sleep(1)
                 except KeyboardInterrupt:
                     print("\nShutting down...")
-            else:
-                print("Failed to start final network visualization")
-        else:
-            print("Failed to create final network visualization")
     else:
         results = run_analysis()
         plot_results(results)
