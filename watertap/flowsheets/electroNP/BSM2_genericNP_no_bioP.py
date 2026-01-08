@@ -125,47 +125,6 @@ def safe_value(x):
         return None
 
 
-def print_constraint_violations(m):
-    print("\n--- Constraints with High Violation (after failed solve) ---")
-    for c in m.component_data_objects(pyo.Constraint, active=True):
-        if c.is_indexed():
-            for idx in c:
-                con = c[idx]
-                try:
-                    body = safe_value(con.body)
-                    lb = safe_value(con.lower) if con.has_lb() else None
-                    ub = safe_value(con.upper) if con.has_ub() else None
-                    if lb is not None and body is not None and body < lb - 1e-4:
-                        print(f"{c.name}{idx} violated: body={body}, lb={lb}")
-                    if ub is not None and body is not None and body > ub + 1e-4:
-                        print(f"{c.name}{idx} violated: body={body}, ub={ub}")
-                except Exception as e2:
-                    print(f"{c.name}{idx}: ERROR ({e2})")
-        else:
-            con = c
-            try:
-                body = safe_value(con.body)
-                lb = safe_value(con.lower) if con.has_lb() else None
-                ub = safe_value(con.upper) if con.has_ub() else None
-                if lb is not None and body is not None and body < lb - 1e-4:
-                    print(f"{c.name} violated: body={body}, lb={lb}")
-                if ub is not None and body is not None and body > ub + 1e-4:
-                    print(f"{c.name} violated: body={body}, ub={ub}")
-            except Exception as e2:
-                print(f"{c.name}: ERROR ({e2})")
-
-
-def print_costing_scaling(m):
-    print("\n--- Costing Variable Scaling Factors ---")
-    for v in m.fs.costing.component_data_objects(pyo.Var, descend_into=True):
-        sf = iscale.get_scaling_factor(v)
-        print(f"{v.name}: scaling_factor={sf}")
-    print("\n--- Costing Constraint Scaling Factors ---")
-    for c in m.fs.costing.component_data_objects(pyo.Constraint, descend_into=True):
-        sf = iscale.get_scaling_factor(c)
-        print(f"{c.name}: scaling_factor={sf}")
-
-
 # DEBUG: Try initializing costing block variables
 # This is a simple approach: set all uninitialized costing variables to a small value
 # (or 1.0 if appropriate) if they are not fixed and have no value.
@@ -184,33 +143,29 @@ def main(
     basis="mass",
     p_removal=0.95,
     n_to_p_ratio=0.3,
+    nh4_removal=None,
     energy_intensity=0.044,
     mgcl2_dosage=0.388,
     water_recovery=0.99,
     apply_costing=True,
     use_idaes_2_10=None,
+    phosphorus_recovery_value=0.1,
+    ammonia_recovery_value=0.1,
 ):
     m = build_flowsheet(has_genericNP=has_genericNP, basis=basis)
-
-    # Add costing BEFORE setting operating conditions (if requested)
-    if apply_costing:
-        add_costing(m)
-        # Deactivate capital cost constraints during initialization
-        for c in m.fs.component_objects(pyo.Constraint, descend_into=True):
-            if "capital_cost" in c.name:
-                c.deactivate()
 
     set_operating_conditions(
         m,
         p_removal=p_removal,
         n_to_p_ratio=n_to_p_ratio,
+        nh4_removal=nh4_removal,
         energy_intensity=energy_intensity,
         mgcl2_dosage=mgcl2_dosage,
         water_recovery=water_recovery,
         use_idaes_2_10=use_idaes_2_10,
     )
 
-    # Now initialize the process (with costing present if apply_costing=True)
+    # Initialize the process FIRST (before adding costing)
     if plot_network_before_solve:
         # Create empty stream table for initial network plot
         stream_dict = {
@@ -245,112 +200,26 @@ def main(
     m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
     print(f"DOF after initialization: {degrees_of_freedom(m)}")
 
-    # Solve the process (with costing if apply_costing=True)
+    # Add costing AFTER flowsheet initialization (standard BSM2 pattern)
     if apply_costing:
-        initialize_costing_block(m)
-        print_costing_scaling(m)
+        add_costing(
+            m,
+            phosphorus_recovery_value=phosphorus_recovery_value,
+            ammonia_recovery_value=ammonia_recovery_value,
+        )
+        # Properly initialize costing block (requires flowsheet to be initialized)
+        m.fs.costing.initialize()
+        # print("\nCosting Variable Scaling Factors")
+        # for v in m.fs.costing.component_data_objects(pyo.Var, descend_into=True):
+        #     sf = iscale.get_scaling_factor(v)
+        #     print(f"{v.name}: scaling_factor={sf}")
+        # print("\nCosting Constraint Scaling Factors")
+        # for c in m.fs.costing.component_data_objects(pyo.Constraint, descend_into=True):
+        #     sf = iscale.get_scaling_factor(c)
+        #     print(f"{c.name}: scaling_factor={sf}")
 
-        def safe_cost_value(x):
-            try:
-                return pyo.value(x)
-            except Exception:
-                return "UNINITIALIZED"
-
-        # Costing debug output
-        for unit in [
-            m.fs.genericNP,
-            m.fs.R1,
-            m.fs.R2,
-            m.fs.R3,
-            m.fs.R4,
-            m.fs.R5,
-            m.fs.CL,
-            m.fs.CL2,
-        ]:
-            if hasattr(unit, "costing"):
-                print(f"\n--- {unit.name} costing variables ---")
-                for v in unit.costing.component_data_objects(
-                    pyo.Var, descend_into=True
-                ):
-                    print(f"{v.name} = {v.value}")
-
-        print("\n--- Costing Constraint Residuals ---")
-        for c in m.fs.costing.component_objects(pyo.Constraint, descend_into=True):
-            for idx in c:
-                try:
-                    body = safe_cost_value(c[idx].body)
-                    lb = safe_cost_value(c[idx].lower) if c[idx].has_lb() else None
-                    ub = safe_cost_value(c[idx].upper) if c[idx].has_ub() else None
-                    res = (
-                        (body - lb)
-                        if lb not in [None, "UNINITIALIZED"] and body != "UNINITIALIZED"
-                        else "UNINITIALIZED"
-                    )
-                    print(f"{c.name}{idx}: {res} (body={body}, lb={lb}, ub={ub})")
-                except Exception as e:
-                    print(f"{c.name}{idx}: ERROR ({e})")
-
-        print("\n--- Costing Variables (NaN or extreme values) ---")
-        for v in m.fs.costing.component_data_objects(pyo.Var, descend_into=True):
-            if v.value is not None and (abs(v.value) > 1e6 or abs(v.value) < 1e-12):
-                print(f"{v.name} = {v.value}")
-
-        print("\n--- Costing Constraint Expressions and Residuals ---")
-        for c in m.fs.costing.component_objects(pyo.Constraint, descend_into=True):
-            for idx in c:
-                try:
-                    expr = c[idx].expr
-                    body = safe_cost_value(c[idx].body)
-                    lb = safe_cost_value(c[idx].lower) if c[idx].has_lb() else None
-                    ub = safe_cost_value(c[idx].upper) if c[idx].has_ub() else None
-                    res = (
-                        (body - lb)
-                        if lb not in [None, "UNINITIALIZED"] and body != "UNINITIALIZED"
-                        else "UNINITIALIZED"
-                    )
-                    print(
-                        f"{c.name}{idx}: expr={expr}, body={body}, lb={lb}, ub={ub}, residual={res}"
-                    )
-                except Exception as e:
-                    print(f"{c.name}{idx}: ERROR ({e})")
-
-        print("\n--- Key Costing Variables ---")
-        costing_vars = [
-            m.fs.genericNP.electricity[0],
-            m.fs.genericNP.MgCl2_flowrate[0],
-            m.fs.genericNP.byproduct.flow_vol[0],
-            m.fs.genericNP.byproduct.conc_mass_comp[0, "S_PO4"],
-            m.fs.genericNP.byproduct.conc_mass_comp[0, "S_NH4"],
-            m.fs.genericNP.mixed_state[0].flow_vol,
-        ]
-        for v in costing_vars:
-            try:
-                print(f"{v.name} = {pyo.value(v)}")
-            except Exception as e:
-                print(f"{v.name} = ERROR ({e})")
-
-        print("\n--- All Fixed Variables ---")
-        for v in m.component_data_objects(pyo.Var, descend_into=True):
-            if v.fixed:
-                try:
-                    print(f"{v.name} (fixed) = {pyo.value(v)}")
-                except Exception as e:
-                    print(f"{v.name} (fixed) = ERROR ({e})")
-
-        print("\n--- Uninitialized Costing Variables ---")
-        for v in m.fs.costing.component_data_objects(pyo.Var, descend_into=True):
-            if v.value is None:
-                print(f"{v.name} is uninitialized (None)")
-
-        print("--- Costing Constraints ---")
-        for c in m.fs.costing.component_objects(pyo.Constraint, descend_into=True):
-            print(c.name)
-        print("\n--- Costing Variables (unfixed/uninitialized) ---")
-        for v in m.fs.costing.component_data_objects(pyo.Var, descend_into=True):
-            if not v.fixed and v.value is None:
-                print(f"{v.name} is unfixed and uninitialized")
-        print("\n--- Degrees of Freedom ---")
-        print(degrees_of_freedom(m))
+    print("\nDegrees of Freedom")
+    print(degrees_of_freedom(m))
 
     # Final solve with costing active
     try:
@@ -366,9 +235,7 @@ def main(
             logger=_log,
             fail_flag=True,
         )
-        print_constraint_violations(m)
     except Exception:
-        print_constraint_violations(m)
         raise
 
     return m, results
@@ -659,6 +526,7 @@ def set_operating_conditions(
     m,
     p_removal=0.95,
     n_to_p_ratio=0.3,
+    nh4_removal=None,
     energy_intensity=0.044,
     mgcl2_dosage=0.388,
     water_recovery=0.99,
@@ -780,7 +648,9 @@ def set_operating_conditions(
 
     # genericNP
     if m.fs.has_genericNP is True:
-        nh4_removal = p_removal * n_to_p_ratio
+        # If nh4_removal is explicitly provided, use it; otherwise calculate from ratio
+        if nh4_removal is None:
+            nh4_removal = p_removal * n_to_p_ratio
         m.fs.genericNP.removal_factors["S_PO4"].set_value(p_removal)
         m.fs.genericNP.removal_factors["S_NH4"].set_value(nh4_removal)
         if "S_NO3" in m.fs.genericNP.removal_factors:
@@ -805,6 +675,31 @@ def set_operating_conditions(
 
         m.fs.genericNP.magnesium_chloride_dosage.fix(mgcl2_dosage * mg_units)
         m.fs.genericNP.frac_mass_H2O_treated[0].fix(water_recovery)
+
+        # Initialize volume and HRT if they exist
+        # TODO: simplify this section
+        if hasattr(m.fs.genericNP, "volume"):
+            # Only fix HRT - volume will be determined by constraint
+            # This prevents over-constraining (both volume and HRT fixed + constraint)
+            default_hrt = 1.3333  # hours
+            m.fs.genericNP.hydraulic_retention_time[0].set_value(default_hrt)
+            m.fs.genericNP.hydraulic_retention_time[0].fix()  # Fixed by default
+
+            # Initialize volume value (will be determined by constraint during solve)
+            # Try to get flow from genericNP mixed_state, fallback to dewater overflow
+            try:
+                initial_flow = pyo.value(m.fs.genericNP.mixed_state[0].flow_vol)  # m³/s
+            except (AttributeError, ValueError, TypeError):
+                try:
+                    initial_flow = pyo.value(m.fs.dewater.overflow.flow_vol[0])  # m³/s
+                except (AttributeError, ValueError, TypeError):
+                    # Default flow if not available
+                    initial_flow = 0.0027396  # m³/s (typical value from flowsheet)
+            initial_flow_m3_hr = initial_flow * 3600  # Convert to m³/hr
+            initial_volume = default_hrt * initial_flow_m3_hr  # m³
+
+            m.fs.genericNP.volume[0].set_value(initial_volume)
+            # Don't fix volume - let constraint determine it from HRT and flow
 
     if use_idaes_2_10:
         # IDAES 2.10.0+ scaling approach (Python 3.12)
@@ -861,6 +756,12 @@ def set_operating_conditions(
         iscale.set_scaling_factor(m.fs.genericNP.magnesium_chloride_dosage, 1e0)
         iscale.set_scaling_factor(m.fs.genericNP.frac_mass_H2O_treated, 1e0)
 
+        # Scale volume and HRT if they exist (TODO: don't check existence)
+        if hasattr(m.fs.genericNP, "volume"):
+            iscale.set_scaling_factor(m.fs.genericNP.volume, 1e-1)
+        if hasattr(m.fs.genericNP, "hydraulic_retention_time"):
+            iscale.set_scaling_factor(m.fs.genericNP.hydraulic_retention_time, 1e0)
+
     # Apply scale_variables for IDAES 2.9.0
     if not use_idaes_2_10:
 
@@ -879,7 +780,7 @@ def set_operating_conditions(
                 if "cations" in var.name:
                     iscale.set_scaling_factor(var, 1e1)
 
-        scale_variables(m)
+    scale_variables(m)
 
     iscale.calculate_scaling_factors(m)
 
@@ -1034,18 +935,31 @@ def solve(m, solver=None, max_iter=3000):
         solver = get_solver()
     # Temporarily increase iteration limit for genericNP convergence
     solver.options["max_iter"] = max_iter
-    results = solver.solve(m, tee=True)
+    results = solver.solve(m, tee=False)  # Debug
     check_solve(results, checkpoint="closing recycle", logger=_log, fail_flag=True)
     pyo.assert_optimal_termination(results)
     return results
 
 
-def add_costing(m):
-    """Add costing block"""
+def add_costing(m, phosphorus_recovery_value=0.1, ammonia_recovery_value=0.1):
+    """Add costing block for all units.
+
+    Costs all units (R1-R5, CL, CL2, genericNP if present).
+    To get upgrade-only LCOW (excluding existing WWTP capex), use
+    calculate_upgrade_lcow() after solving.
+
+    Parameters
+    ----------
+    m : ConcreteModel
+        Pyomo model
+    phosphorus_recovery_value : float, optional
+        Value of recovered phosphorus product ($/kg). Default is 0.1.
+    ammonia_recovery_value : float, optional
+        Value of recovered ammonia product ($/kg). Default is 0.1.
+    """
     m.fs.costing = WaterTAPCosting()
     m.fs.costing.base_currency = pyo.units.USD_2020
 
-    # Costing Blocks
     m.fs.R1.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
     m.fs.R2.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
     m.fs.R3.costing = UnitModelCostingBlock(flowsheet_costing_block=m.fs.costing)
@@ -1060,18 +974,71 @@ def add_costing(m):
         costing_method=cost_circular_clarifier,
     )
 
+    # Cost genericNP if it exists
     if hasattr(m.fs, "genericNP"):
         m.fs.genericNP.costing = UnitModelCostingBlock(
-            flowsheet_costing_block=m.fs.costing
+            flowsheet_costing_block=m.fs.costing,
+            costing_method=cost_genericNP,
+            costing_method_arguments={
+                "cost_electricity_flow": True,
+                "cost_MgCl2_flow": True,
+                "cost_phosphorus_flow": True,
+                "cost_ammonia_flow": True,
+            },
         )
-        m.fs.costing.genericNP.phosphorus_recovery_value = 0.1
-        m.fs.costing.genericNP.ammonia_recovery_value = 0.1
+        m.fs.costing.genericNP.phosphorus_recovery_value = phosphorus_recovery_value
+        m.fs.costing.genericNP.ammonia_recovery_value = ammonia_recovery_value
 
     m.fs.costing.cost_process()
     m.fs.costing.add_LCOW(m.fs.FeedWater.properties[0].flow_vol)
 
     iscale.set_scaling_factor(m.fs.costing.LCOW, 1e2)
     iscale.set_scaling_factor(m.fs.costing.total_capital_cost, 1e-7)
+
+
+def calculate_upgrade_lcow(m):
+    """Calculate LCOW for genericNP upgrade only, excluding existing WWTP capex.
+
+    Uses the component-level LCOW breakdowns from WaterTAP costing to subtract
+    capital costs from existing WWTP infrastructure (R1-R5, CL, CL2).
+    Operating costs (including electricity) are still included for all units.
+
+    Parameters
+    ----------
+    m : ConcreteModel
+        Solved Pyomo model with costing
+
+    Returns
+    -------
+    float
+        Upgrade-only LCOW in $/m³
+    """
+    # Existing WWTP infrastructure units to exclude from capex
+    wwtp_units = ["fs.R1", "fs.R2", "fs.R3", "fs.R4", "fs.R5", "fs.CL", "fs.CL2"]
+
+    # Get full LCOW
+    full_lcow = pyo.value(m.fs.costing.LCOW)
+
+    # Subtract capital cost contributions from existing WWTP units
+    # using the component breakdowns that add_LCOW creates
+    wwtp_capex_lcow = 0.0
+    for unit_name in wwtp_units:
+        if unit_name in m.fs.costing.LCOW_component_direct_capex:
+            wwtp_capex_lcow += pyo.value(
+                m.fs.costing.LCOW_component_direct_capex[unit_name]
+            )
+        if unit_name in m.fs.costing.LCOW_component_indirect_capex:
+            wwtp_capex_lcow += pyo.value(
+                m.fs.costing.LCOW_component_indirect_capex[unit_name]
+            )
+        # Also subtract fixed opex that's proportional to capital cost
+        # (maintenance, labor, etc. that would exist for the base WWTP)
+        if unit_name in m.fs.costing.LCOW_component_fixed_opex:
+            wwtp_capex_lcow += pyo.value(
+                m.fs.costing.LCOW_component_fixed_opex[unit_name]
+            )
+
+    return full_lcow - wwtp_capex_lcow
 
 
 def build_sweep_params(model, nx=2, **kwargs):
@@ -1089,27 +1056,25 @@ def build_sweep_params(model, nx=2, **kwargs):
 
 
 def build_model(**kwargs):
+    has_genericNP = kwargs.get("has_genericNP", True)
     basis = kwargs.get("basis", "mass")
     p_removal = kwargs.get("p_removal", 0.95)
     n_to_p_ratio = kwargs.get("n_to_p_ratio", 0.3)
+    nh4_removal = kwargs.get("nh4_removal", None)
     energy_intensity = kwargs.get("energy_intensity", 0.044)
     mgcl2_dosage = kwargs.get("mgcl2_dosage", 0.388)
     water_recovery = kwargs.get("water_recovery", 0.99)
+    phosphorus_recovery_value = kwargs.get("phosphorus_recovery_value", 0.1)
+    ammonia_recovery_value = kwargs.get("ammonia_recovery_value", 0.1)
 
     # return main(has_genericNP=has_genericNP)[0]
-    m = build_flowsheet(has_genericNP=True, basis=basis)
-
-    add_costing(m)
-
-    # deactivate capital cost constraints
-    for c in m.fs.component_objects(pyo.Constraint, descend_into=True):
-        if "capital_cost" in c.name:
-            c.deactivate()
+    m = build_flowsheet(has_genericNP=has_genericNP, basis=basis)
 
     set_operating_conditions(
         m,
         p_removal=p_removal,
         n_to_p_ratio=n_to_p_ratio,
+        nh4_removal=nh4_removal,
         energy_intensity=energy_intensity,
         mgcl2_dosage=mgcl2_dosage,
         water_recovery=water_recovery,
@@ -1121,7 +1086,16 @@ def build_model(**kwargs):
     m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
     print(f"DOF before initialization: {degrees_of_freedom(m)}")
 
-    initialize_system(m, has_genericNP=True)
+    initialize_system(m, has_genericNP=has_genericNP)
+
+    # Add costing AFTER initialization (standard BSM2 pattern)
+    add_costing(
+        m,
+        phosphorus_recovery_value=phosphorus_recovery_value,
+        ammonia_recovery_value=ammonia_recovery_value,
+    )
+    m.fs.costing.initialize()
+
     iscale.calculate_scaling_factors(m)
     for mx in m.fs.mixers:
         mx.pressure_equality_constraints[0.0, 2].deactivate()
@@ -1142,11 +1116,23 @@ def build_outputs(model, **kwargs):
         outputs["Effluent PO4 Concentration"] = model.fs.Treated.conc_mass_comp[
             0, "S_PO4"
         ]
-        outputs["P_removal"] = model.fs.genericNP.removal_factors["S_PO4"]
-        outputs["NH4_removal"] = model.fs.genericNP.removal_factors["S_NH4"]
-        outputs["EI"] = model.fs.genericNP.energy_electric_flow["S_NH4"]
+        # Only access genericNP if it exists
+        if hasattr(model.fs, "genericNP"):
+            outputs["P_removal"] = model.fs.genericNP.removal_factors["S_PO4"]
+            outputs["NH4_removal"] = model.fs.genericNP.removal_factors["S_NH4"]
+            outputs["EI"] = model.fs.genericNP.energy_electric_flow["S_NH4"]
+            if hasattr(model.fs.costing, "genericNP"):
+                outputs["Product_Value"] = (
+                    model.fs.costing.genericNP.ammonia_recovery_value
+                )
+            else:
+                outputs["Product_Value"] = None
+        else:
+            outputs["P_removal"] = None
+            outputs["NH4_removal"] = None
+            outputs["EI"] = None
+            outputs["Product_Value"] = None
         outputs["LCOW"] = model.fs.costing.LCOW
-        outputs["Product_Value"] = model.fs.costing.genericNP.ammonia_recovery_value
     except:
         print("Unable to solve")
         for key in outputs:
@@ -1158,6 +1144,7 @@ def reinitialize_system(
     model,
     p_removal=0.95,
     n_to_p_ratio=0.3,
+    nh4_removal=None,
     energy_intensity=0.044,
     mgcl2_dosage=0.388,
     water_recovery=0.99,
@@ -1167,6 +1154,7 @@ def reinitialize_system(
         model,
         p_removal=p_removal,
         n_to_p_ratio=n_to_p_ratio,
+        nh4_removal=nh4_removal,
         energy_intensity=energy_intensity,
         mgcl2_dosage=mgcl2_dosage,
         water_recovery=water_recovery,
@@ -1245,6 +1233,58 @@ if __name__ == "__main__":
             plot_network_before_solve=plot_network_before_solve,
             apply_costing=True,
         )
+
+        # Report both full LCOW and upgrade-only LCOW
+        full_lcow = pyo.value(m.fs.costing.LCOW)
+        upgrade_lcow = calculate_upgrade_lcow(m)
+        print(f"\nFull LCOW (including WWTP capex): ${full_lcow:.4f}/m³")
+        print(f"Upgrade-only LCOW (genericNP only): ${upgrade_lcow:.4f}/m³")
+
+        # Confirm recovered value is included in costing
+        if m.fs.has_genericNP and hasattr(m.fs.costing, "genericNP"):
+            print("\n=== Recovery Value Contribution ===")
+            p_recovery_value = pyo.value(
+                m.fs.costing.genericNP.phosphorus_recovery_value
+            )
+            nh4_recovery_value = pyo.value(
+                m.fs.costing.genericNP.ammonia_recovery_value
+            )
+            print(f"Phosphorus recovery value: ${p_recovery_value:.4f}/kg")
+            print(f"Ammonia recovery value: ${nh4_recovery_value:.4f}/kg")
+
+            # Calculate recovered product flow rates
+            t0 = m.fs.time.first()
+            p_flow = pyo.value(
+                m.fs.genericNP.byproduct.flow_vol[t0]
+                * m.fs.genericNP.byproduct.conc_mass_comp[t0, "S_PO4"]
+            )  # kg/hr
+            nh4_flow = pyo.value(
+                m.fs.genericNP.byproduct.flow_vol[t0]
+                * m.fs.genericNP.byproduct.conc_mass_comp[t0, "S_NH4"]
+            )  # kg/hr
+            print(f"Phosphorus product flow: {p_flow:.4f} kg/hr")
+            print(f"Ammonia product flow: {nh4_flow:.4f} kg/hr")
+
+            # Check if recovery flows are included in variable operating costs
+            if "phosphorus salt product" in m.fs.costing.aggregate_flow_costs:
+                p_cost = pyo.value(
+                    m.fs.costing.aggregate_flow_costs["phosphorus salt product"]
+                )
+                print(f"Phosphorus recovery cost contribution: ${p_cost:.2f}/yr")
+            else:
+                print(
+                    "WARNING: Phosphorus recovery flow not found in aggregate_flow_costs"
+                )
+
+            if "ammonia product" in m.fs.costing.aggregate_flow_costs:
+                nh4_cost = pyo.value(
+                    m.fs.costing.aggregate_flow_costs["ammonia product"]
+                )
+                print(f"Ammonia recovery cost contribution: ${nh4_cost:.2f}/yr")
+            else:
+                print(
+                    "WARNING: Ammonia recovery flow not found in aggregate_flow_costs"
+                )
 
         # Create stream table
         stream_dict = {

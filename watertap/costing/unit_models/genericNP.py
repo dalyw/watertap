@@ -121,7 +121,15 @@ def cost_genericNP_capital(blk, HRT, sizing_cost):
     """
     make_capital_cost_var(blk)
 
-    blk.HRT = pyo.Expression(expr=HRT)
+    # Use HRT from unit model if available, otherwise use parameter
+    if hasattr(blk.unit_model, "hydraulic_retention_time"):
+        # Use unit model HRT (linked to volume)
+        blk.HRT = pyo.Expression(
+            expr=blk.unit_model.hydraulic_retention_time[blk.flowsheet().time.first()]
+        )
+    else:  # TODO: remove
+        # Fallback to parameter block HRT (for backward compatibility)
+        blk.HRT = pyo.Expression(expr=HRT)
     blk.sizing_cost = pyo.Expression(expr=sizing_cost)
 
     flow_in = pyo.units.convert(

@@ -275,6 +275,36 @@ class GenericNPZOdata(SeparatorData):
                     )
                 )
 
+        # Add reactor volume and HRT variables for optimization
+        self.volume = Var(
+            self.flowsheet().time,
+            initialize=10.0,
+            bounds=(0.1, None),  # Minimum 0.1 m³, no upper bound
+            units=pyunits.m**3,
+            doc="Reactor volume",
+        )
+        # Volume is not fixed by default - determined by constraint from HRT and flow
+
+        self.hydraulic_retention_time = Var(
+            self.flowsheet().time,
+            initialize=1.3333,
+            bounds=(0.1, 10.0),  # Reasonable bounds: 0.1 to 10 hours
+            units=pyunits.hr,
+            doc="Hydraulic retention time",
+        )
+        self.hydraulic_retention_time.fix()  # Fixed by default - volume determined by constraint
+
+        @self.Constraint(
+            self.flowsheet().time,
+            doc="Constraint linking HRT to volume and flow rate",
+        )
+        def hrt_volume_constraint(b, t):
+            flow_in_m3_hr = pyunits.convert(
+                b.mixed_state[t].flow_vol,
+                to_units=pyunits.m**3 / pyunits.hr,
+            )
+            return b.hydraulic_retention_time[t] * flow_in_m3_hr == b.volume[t]
+
     def _get_performance_contents(self, time_point=0):
         var_dict = {}
         var_dict["Mass fraction of H2O in treated stream"] = self.frac_mass_H2O_treated[
@@ -297,6 +327,8 @@ class GenericNPZOdata(SeparatorData):
             self.magnesium_chloride_dosage
         )
         var_dict["Magnesium Chloride Demand"] = self.MgCl2_flowrate[time_point]
+        var_dict["Reactor Volume"] = self.volume[time_point]
+        var_dict["Hydraulic Retention Time"] = self.hydraulic_retention_time[time_point]
         return {"vars": var_dict}
 
     def _get_stream_table_contents(self, time_point=0):
@@ -313,6 +345,12 @@ class GenericNPZOdata(SeparatorData):
         super().calculate_scaling_factors()
 
         iscale.set_scaling_factor(self.frac_mass_H2O_treated, 1)
+
+        # Scale volume and HRT
+        if iscale.get_scaling_factor(self.volume[0]) is None:
+            iscale.set_scaling_factor(self.volume[0], 1e-1)
+        if iscale.get_scaling_factor(self.hydraulic_retention_time[0]) is None:
+            iscale.set_scaling_factor(self.hydraulic_retention_time[0], 1e0)
 
         if iscale.get_scaling_factor(self.magnesium_chloride_dosage) is None:
             sf = iscale.get_scaling_factor(
