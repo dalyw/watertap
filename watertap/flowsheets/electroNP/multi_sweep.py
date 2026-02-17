@@ -22,10 +22,28 @@ from pyomo.opt import SolverResults
 
 def build_and_initialize_model(**kwargs):
     """Construct flowsheet following standard BSM2 pattern: initialize flowsheet first, then add costing."""
+    # Extract parameters for genericNP if provided
+    p_removal = kwargs.get("p_removal", 0.95)
+    nh4_removal = kwargs.get("nh4_removal", None)
+    n_to_p_ratio = kwargs.get("n_to_p_ratio", 0.3)
+    energy_intensity = kwargs.get("energy_intensity", 0.044)
+    mgcl2_dosage = kwargs.get("mgcl2_dosage", 0.388)
+    water_recovery = kwargs.get("water_recovery", 0.99)
+    ammonia_recovery_value = kwargs.get("ammonia_recovery_value", 0.1)
+    phosphorus_recovery_value = kwargs.get("phosphorus_recovery_value", 0.1)
+
     m = genericNP_flowsheet.build_flowsheet(has_genericNP=True, basis="mass")
 
-    # Set default operating conditions
-    genericNP_flowsheet.set_operating_conditions(m)
+    # Set operating conditions with provided parameters
+    genericNP_flowsheet.set_operating_conditions(
+        m,
+        p_removal=p_removal,
+        n_to_p_ratio=n_to_p_ratio,
+        nh4_removal=nh4_removal,
+        energy_intensity=energy_intensity,
+        mgcl2_dosage=mgcl2_dosage,
+        water_recovery=water_recovery,
+    )
 
     # Deactivate pressure equality constraints before init
     for mx in m.fs.mixers:
@@ -43,7 +61,11 @@ def build_and_initialize_model(**kwargs):
     m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
 
     # Add costing AFTER initialization (standard BSM2 pattern)
-    genericNP_flowsheet.add_costing(m)
+    genericNP_flowsheet.add_costing(
+        m,
+        phosphorus_recovery_value=phosphorus_recovery_value,
+        ammonia_recovery_value=ammonia_recovery_value,
+    )
     m.fs.costing.initialize()
 
     # Solve once to establish a consistent starting point
@@ -108,6 +130,14 @@ def build_sweep_params(model, case_num=1, nx=11, **kwargs):
         sweep_params["P_removal_fraction"] = LinearSample(
             model.fs.genericNP.removal_factors["S_PO4"], 0.1, 0.95, nx
         )
+    elif case_num == 4:
+        # Ternary sweep: NH4 removal, energy intensity, and recovery value
+        sweep_params["NH4_energy_intensity"] = LinearSample(
+            model.fs.genericNP.energy_electric_flow["S_NH4"], 0.04, 2.5, nx
+        )
+        sweep_params["ammonia_recovery_value"] = LinearSample(
+            model.fs.costing.genericNP.ammonia_recovery_value, 0.0, 0.5, nx
+        )
 
     return sweep_params
 
@@ -168,6 +198,12 @@ def run_analysis(case_num=1, nx=11, interpolate_nan_outputs=True):
         sweep_param_names = ["NH4_removal_fraction", "NH4_energy_intensity"]
     elif case_num == 3:
         sweep_param_names = ["NH4_removal_fraction", "P_removal_fraction"]
+    elif case_num == 4:
+        sweep_param_names = [
+            "NH4_removal_fraction",
+            "NH4_energy_intensity",
+            "ammonia_recovery_value",
+        ]
     else:
         sweep_param_names = ["unknown"]
 
@@ -187,9 +223,24 @@ def run_analysis(case_num=1, nx=11, interpolate_nan_outputs=True):
         parallel_back_end="concurrent.futures",
     )
 
+    # For case 4, we need to pass default values through build_model_kwargs
+    # since recovery values are set during model building
+    build_kwargs = {}
+    if case_num == 4:
+        # Default values for case 4 ternary sweep
+        build_kwargs = {
+            "p_removal": 0.95,
+            "n_to_p_ratio": 0.3,
+            "energy_intensity": 0.044,
+            "mgcl2_dosage": 0.388,
+            "water_recovery": 0.99,
+            "ammonia_recovery_value": 0.1,
+            "phosphorus_recovery_value": 0.1,
+        }
+
     results_array, results_dict = ps.parameter_sweep(
         build_model=build_and_initialize_model,
-        build_model_kwargs=dict(),
+        build_model_kwargs=build_kwargs,
         build_sweep_params=build_sweep_params,
         build_sweep_params_kwargs=dict(case_num=case_num, nx=nx),
         build_outputs=build_outputs,
@@ -200,8 +251,8 @@ def run_analysis(case_num=1, nx=11, interpolate_nan_outputs=True):
 
 
 if __name__ == "__main__":
-    case_num = 3
-    nx = 8  # min 5 points for interpolation
+    case_num = 4
+    nx = 5  # min 5 points for interpolation
 
     print(f"Running GenericNP sensitivity case {case_num} with nx={nx}")
     results_array, results_dict, _ = run_analysis(case_num=case_num, nx=nx)

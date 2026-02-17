@@ -218,8 +218,7 @@ def main(
         #     sf = iscale.get_scaling_factor(c)
         #     print(f"{c.name}: scaling_factor={sf}")
 
-    print("\nDegrees of Freedom")
-    print(degrees_of_freedom(m))
+    print(f"\nDegrees of Freedom: {degrees_of_freedom(m)}")
 
     # Final solve with costing active
     try:
@@ -790,15 +789,15 @@ def initialize_system(m, has_genericNP=False):
     # Apply sequential decomposition - 1 iteration should suffice
     seq = SequentialDecomposition()
     seq.options.tear_method = "Direct"
-    seq.options.iterLim = 1
+    seq.options.iterLim = 3
     seq.options.tear_set = [m.fs.stream5, m.fs.stream10adm]
 
     G = seq.create_graph(m)
     # Uncomment this code to see tear set and initialization order
-    order = seq.calculation_order(G)
-    print("Initialization Order")
-    for o in order:
-        print(o[0].name)
+    # order = seq.calculation_order(G)
+    # print("Initialization Order")
+    # for o in order:
+    #     print(o[0].name)
 
     if has_genericNP:
         # P_removal = 0.65 - 0.95
@@ -916,16 +915,17 @@ def initialize_system(m, has_genericNP=False):
     # )
 
     def function(unit):
-        unit.initialize(outlvl=idaeslog.INFO, solver="ipopt-watertap")
-
-    #     try:
-    #         # Mixers can be touchy with BTI; follow BSM2 pattern
-    #         if hasattr(unit, "feed_water") or "MX" in unit.name:
-    #             unit.initialize(outlvl=idaeslog.WARNING, solver="ipopt-watertap")
-    #         else:
-    #             initializer.initialize(unit, outlvl=idaeslog.WARNING)
-    #     except InitializationError:
-    #         pass
+        if "AD" in unit.name:
+            # AD has complex biochemistry (acid-base equilibrium, Henry's law,
+            # 19+ biological reactions). Give it more iterations and relaxed
+            # pivoting to help initialization converge.
+            unit.initialize(
+                outlvl=idaeslog.INFO,
+                solver="ipopt-watertap",
+                optarg={"max_iter": 5000, "ma27_pivtol": 1e-2},
+            )
+        else:
+            unit.initialize(outlvl=idaeslog.INFO, solver="ipopt-watertap")
 
     seq.run(m, function)
 
