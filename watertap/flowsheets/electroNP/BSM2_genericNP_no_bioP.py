@@ -92,7 +92,7 @@ from watertap.costing.unit_models.clarifier import (
 )
 
 # from watertap.tools.plot_network import plot_network
-from watertap.tools.dash_network import (
+from watertap.tools.local.dash_network import (
     create_dash_app,
     find_available_port,
     run_dash_app,
