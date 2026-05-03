@@ -1,7 +1,7 @@
 #################################################################################
-# WaterTAP Copyright (c) 2020-2026, The Regents of the University of California,
+# WaterTAP Copyright (c) 2020-2024, The Regents of the University of California,
 # through Lawrence Berkeley National Laboratory, Oak Ridge National Laboratory,
-# National Laboratory of the Rockies, and National Energy Technology
+# National Renewable Energy Laboratory, and National Energy Technology
 # Laboratory (subject to receipt of any required approvals from the U.S. Dept.
 # of Energy). All rights reserved.
 #
@@ -17,7 +17,6 @@ The flowsheet follows the same formulation as benchmark simulation model no.2 (B
 but comprises different specifications for default values than BSM2.
 
 """
-
 __author__ = "Alejandro Garciadiego, Adam Atia, Marcus Holly, Chenyu Wang, Ben Knueven, Xinhong Liu,"
 
 import pyomo.environ as pyo
@@ -998,10 +997,10 @@ def initialize_system(m):
 
     G = seq.create_graph(m)
     # The code below shows tear set and initialization order
-    # order = seq.calculation_order(G)
-    # print("Initialization Order")
-    # for o in order:
-    #     print(o[0].name)
+    order = seq.calculation_order(G)
+    print("Initialization Order")
+    for o in order:
+        print(o[0].name)
 
     # Initial guesses for flow into first reactor
     tear_guesses1 = {
@@ -1050,9 +1049,7 @@ def initialize_system(m):
     seq.set_guesses_for(m.fs.R1.inlet, tear_guesses1)
     seq.set_guesses_for(m.fs.asm_adm.inlet, tear_guesses2)
 
-    initializer = BlockTriangularizationInitializer(
-        calculate_variable_options={"eps": 2e-8}, skip_final_solve=True
-    )
+    initializer = BlockTriangularizationInitializer()
 
     def function(unit):
         try:
