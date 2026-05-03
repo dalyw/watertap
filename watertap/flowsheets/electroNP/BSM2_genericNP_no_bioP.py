@@ -935,7 +935,7 @@ def solve(m, solver=None, max_iter=3000):
         solver = get_solver()
     # Temporarily increase iteration limit for genericNP convergence
     solver.options["max_iter"] = max_iter
-    results = solver.solve(m, tee=False)  # Debug
+    results = solver.solve(m, tee=True)  # Debug
     check_solve(results, checkpoint="closing recycle", logger=_log, fail_flag=True)
     pyo.assert_optimal_termination(results)
     return results

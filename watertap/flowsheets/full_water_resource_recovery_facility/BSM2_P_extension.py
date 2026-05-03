@@ -633,10 +633,10 @@ def initialize_system(m, bio_P=False, solver=None):
 
     G = seq.create_graph(m)
     # Uncomment this code to see tear set and initialization order
-    order = seq.calculation_order(G)
-    print("Initialization Order")
-    for o in order:
-        print(o[0].name)
+    # order = seq.calculation_order(G)
+    # print("Initialization Order")
+    # for o in order:
+    #     print(o[0].name)
 
     if bio_P:
         tear_guesses = {

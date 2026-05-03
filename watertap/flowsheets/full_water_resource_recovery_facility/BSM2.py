@@ -998,10 +998,10 @@ def initialize_system(m):
 
     G = seq.create_graph(m)
     # The code below shows tear set and initialization order
-    order = seq.calculation_order(G)
-    print("Initialization Order")
-    for o in order:
-        print(o[0].name)
+    # order = seq.calculation_order(G)
+    # print("Initialization Order")
+    # for o in order:
+    #     print(o[0].name)
 
     # Initial guesses for flow into first reactor
     tear_guesses1 = {
