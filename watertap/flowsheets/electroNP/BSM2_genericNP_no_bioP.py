@@ -218,8 +218,6 @@ def main(
         #     sf = iscale.get_scaling_factor(c)
         #     print(f"{c.name}: scaling_factor={sf}")
 
-    print(f"\nDegrees of Freedom: {degrees_of_freedom(m)}")
-
     # Final solve with costing active
     try:
         results = solve(m, max_iter=5000)
@@ -532,7 +530,7 @@ def set_operating_conditions(
     use_idaes_2_10=False,
 ):
     # Feed Water Conditions
-    print(f"DOF before feed: {degrees_of_freedom(m)}")
+    # print(f"DOF before feed: {degrees_of_freedom(m)}")
     m.fs.FeedWater.flow_vol.fix(20935.15 * pyo.units.m**3 / pyo.units.day)
     m.fs.FeedWater.temperature.fix(308.15 * pyo.units.K)
     m.fs.FeedWater.pressure.fix(1 * pyo.units.atm)
@@ -935,7 +933,7 @@ def solve(m, solver=None, max_iter=3000):
         solver = get_solver()
     # Temporarily increase iteration limit for genericNP convergence
     solver.options["max_iter"] = max_iter
-    results = solver.solve(m, tee=True)  # Debug
+    results = solver.solve(m, tee=False)
     check_solve(results, checkpoint="closing recycle", logger=_log, fail_flag=True)
     pyo.assert_optimal_termination(results)
     return results
@@ -1101,7 +1099,7 @@ def build_model(**kwargs):
         mx.pressure_equality_constraints[0.0, 2].deactivate()
     m.fs.MX3.pressure_equality_constraints[0.0, 2].deactivate()
     m.fs.MX3.pressure_equality_constraints[0.0, 3].deactivate()
-    print(f"DOF after initialization: {degrees_of_freedom(m)}")
+    # print(f"DOF after initialization: {degrees_of_freedom(m)}")
 
     return m
 
